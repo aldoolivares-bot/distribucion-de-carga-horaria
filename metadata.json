@@ -1,0 +1,5 @@
+{
+  "name": "Calculadora de Jornada Docente",
+  "description": "Herramienta para calcular la distribución de la jornada laboral docente según la normativa legal (65/35).",
+  "requestFramePermissions": []
+}
