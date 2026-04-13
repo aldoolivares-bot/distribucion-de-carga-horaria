@@ -21,7 +21,16 @@ import {
   GraduationCap,
   CheckCircle2,
   Circle,
-  Lightbulb
+  Lightbulb,
+  Download,
+  User,
+  UserPlus,
+  ShieldAlert,
+  Users2,
+  Library,
+  Globe,
+  Map,
+  Utensils
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -32,6 +41,8 @@ import {
   Legend 
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 // --- Types ---
 interface WorkloadData {
@@ -69,6 +80,7 @@ const decimalToTime = (decimal: number): TimeDisplay => {
 
 export default function App() {
   const [contractHours, setContractHours] = useState<number>(44);
+  const [teacherName, setTeacherName] = useState<string>('');
 
   // Community Activities State
   const [activities, setActivities] = useState<CommunityActivity[]>([
@@ -80,6 +92,13 @@ export default function App() {
     { id: 'desarrollo_prof', name: 'Desarrollo Profesional Docente', icon: <Lightbulb className="w-4 h-4" />, fixedTime: 1, isActive: true },
     { id: 'consejo_adm', name: 'Consejo Administrativo', icon: <ShieldCheck className="w-4 h-4" />, fixedTime: 1.5, isActive: false },
     { id: 'ceal', name: 'CEAL', icon: <GraduationCap className="w-4 h-4" />, isActive: false },
+    { id: 'refuerzo', name: 'Refuerzo Educativo', icon: <UserPlus className="w-4 h-4" />, isActive: false },
+    { id: 'pise', name: 'PISE', icon: <ShieldAlert className="w-4 h-4" />, isActive: false },
+    { id: 'cgp', name: 'CGP', icon: <Users2 className="w-4 h-4" />, isActive: false },
+    { id: 'cra', name: 'CRA', icon: <Library className="w-4 h-4" />, isActive: false },
+    { id: 'enlace', name: 'ENLACE', icon: <Globe className="w-4 h-4" />, isActive: false },
+    { id: 'mruta', name: 'M.RUTA', icon: <Map className="w-4 h-4" />, isActive: false },
+    { id: 'pae', name: 'PAE', icon: <Utensils className="w-4 h-4" />, isActive: false },
   ]);
 
   const toggleActivity = (id: string) => {
@@ -147,6 +166,68 @@ export default function App() {
   const comunidadTime = decimalToTime(results.comunidad);
   const totalNoLectivasTime = decimalToTime(results.noLectivasEfectivas);
 
+  const exportPDF = () => {
+    const doc = new jsPDF();
+    const timestamp = new Date().toLocaleDateString();
+
+    // Title
+    doc.setFontSize(20);
+    doc.setTextColor(59, 130, 246); // blue-600
+    doc.text('Informe de Jornada Docente', 14, 22);
+
+    // Metadata
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Docente: ${teacherName || 'No especificado'}`, 14, 32);
+    doc.text(`Fecha: ${timestamp}`, 14, 37);
+    doc.text(`Contrato: ${contractHours} horas semanales`, 14, 42);
+    doc.text('Basado en Tabla 2019 (Proporción 65/35)', 14, 47);
+
+    // Main Table
+    autoTable(doc, {
+      startY: 55,
+      head: [['Descripción', 'Sigla', 'Tiempo Real']],
+      body: [
+        ['Horas Lectivas (Docencia Aula)', 'HC', hcTime.formatted],
+        ['Recreos', 'R', recreoTime.formatted],
+        ['Horas No Lectivas (Disponibles)', 'HNL', totalNoLectivasTime.formatted],
+        ['  - Preparación y Evaluación (50% HNL)', 'PEA', peaTime.formatted],
+        ['  - Gestión y Comunidad (50% HNL)', 'GC', comunidadTime.formatted],
+      ],
+      theme: 'striped',
+      headStyles: { fillColor: [59, 130, 246] },
+    });
+
+    // Community Activities Table
+    const communityRows = communityDistribution.map(act => [
+      act.name,
+      act.fixedTime ? 'Fijo' : 'Variable',
+      decimalToTime(act.time).formatted
+    ]);
+
+    if (communityRows.length > 0) {
+      doc.setFontSize(14);
+      doc.setTextColor(0);
+      doc.text('Desglose de Gestión y Comunidad', 14, (doc as any).lastAutoTable.finalY + 15);
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 20,
+        head: [['Actividad', 'Tipo', 'Tiempo']],
+        body: communityRows,
+        theme: 'grid',
+        headStyles: { fillColor: [245, 158, 11] }, // amber-500
+      });
+    }
+
+    // Footer
+    const finalY = (doc as any).lastAutoTable.finalY + 20;
+    doc.setFontSize(10);
+    doc.setTextColor(150);
+    doc.text('Generado por JornadaDocente.cl', 14, finalY);
+
+    doc.save(`Jornada_Docente_${teacherName.replace(/\s+/g, '_') || 'Informe'}.pdf`);
+  };
+
   // Warning for community time overflow
   const totalFixedTime = activities.filter(a => a.isActive && a.fixedTime).reduce((sum, a) => sum + (a.fixedTime || 0), 0);
   const isCommunityOverloaded = totalFixedTime > results.comunidad;
@@ -164,8 +245,24 @@ export default function App() {
               JornadaDocente<span className="text-blue-600">.cl</span>
             </h1>
           </div>
-          <div className="hidden sm:flex items-center gap-4 text-sm text-slate-500 font-medium">
-            <span className="flex items-center gap-1"><Info className="w-4 h-4" /> Tabla 2019 (65/35)</span>
+          <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5">
+              <User className="w-4 h-4 text-slate-400" />
+              <input 
+                type="text" 
+                placeholder="Nombre del docente..."
+                value={teacherName}
+                onChange={(e) => setTeacherName(e.target.value)}
+                className="bg-transparent border-none outline-none text-sm font-medium w-40 focus:w-60 transition-all"
+              />
+            </div>
+            <button 
+              onClick={exportPDF}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-sm"
+            >
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">PDF</span>
+            </button>
           </div>
         </div>
       </header>
