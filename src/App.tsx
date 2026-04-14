@@ -65,6 +65,8 @@ interface CommunityActivity {
   icon: React.ReactNode;
   fixedTime?: number; // in hours
   isActive: boolean;
+  customHours?: number;
+  customMinutes?: number;
 }
 
 // --- Utils ---
@@ -105,6 +107,10 @@ export default function App() {
     setActivities(prev => prev.map(a => a.id === id ? { ...a, isActive: !a.isActive } : a));
   };
 
+  const updateActivityTime = (id: string, field: 'customHours' | 'customMinutes', value: number) => {
+    setActivities(prev => prev.map(a => a.id === id ? { ...a, [field]: value } : a));
+  };
+
   const results = useMemo(() => {
     // --- Tabla 2019 Logic (65/35) ---
     // 1. Calculate Pedagogical Hours (HA) as 65% of contract
@@ -140,17 +146,38 @@ export default function App() {
   // Calculate Community Distribution
   const communityDistribution = useMemo(() => {
     const activeActivities = activities.filter(a => a.isActive);
-    const fixedActivities = activeActivities.filter(a => a.fixedTime !== undefined);
-    const variableActivities = activeActivities.filter(a => a.fixedTime === undefined);
+    
+    // Fixed activities are those with fixedTime OR those with custom inputs (like Desarrollo Prof)
+    const fixedActivities = activeActivities.filter(a => 
+      a.fixedTime !== undefined || 
+      (a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined))
+    );
+    
+    const variableActivities = activeActivities.filter(a => 
+      a.fixedTime === undefined && 
+      !(a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined))
+    );
 
-    const totalFixedTime = fixedActivities.reduce((sum, a) => sum + (a.fixedTime || 0), 0);
+    const totalFixedTime = fixedActivities.reduce((sum, a) => {
+      if (a.fixedTime !== undefined) return sum + a.fixedTime;
+      if (a.id === 'desarrollo_prof') {
+        const h = a.customHours || 0;
+        const m = (a.customMinutes || 0) / 60;
+        return sum + h + m;
+      }
+      return sum;
+    }, 0);
+
     const remainingTime = Math.max(0, results.comunidad - totalFixedTime);
     const timePerVariable = variableActivities.length > 0 ? remainingTime / variableActivities.length : 0;
 
-    return activeActivities.map(a => ({
-      ...a,
-      time: a.fixedTime !== undefined ? a.fixedTime : timePerVariable
-    }));
+    return activeActivities.map(a => {
+      if (a.fixedTime !== undefined) return { ...a, time: a.fixedTime };
+      if (a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined)) {
+        return { ...a, time: (a.customHours || 0) + (a.customMinutes || 0) / 60 };
+      }
+      return { ...a, time: timePerVariable };
+    });
   }, [activities, results.comunidad]);
 
   const chartData = [
@@ -321,32 +348,63 @@ export default function App() {
               
               <div className="space-y-2">
                 {activities.map((activity) => (
-                  <button
-                    key={activity.id}
-                    onClick={() => toggleActivity(activity.id)}
-                    className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all ${
-                      activity.isActive 
-                        ? 'bg-amber-50 border-amber-200 text-amber-900 shadow-sm' 
-                        : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={activity.isActive ? 'text-amber-600' : 'text-slate-300'}>
-                        {activity.icon}
+                  <div key={activity.id} className="space-y-2">
+                    <button
+                      onClick={() => toggleActivity(activity.id)}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all ${
+                        activity.isActive 
+                          ? 'bg-amber-50 border-amber-200 text-amber-900 shadow-sm' 
+                          : 'bg-white border-slate-100 text-slate-400 hover:border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={activity.isActive ? 'text-amber-600' : 'text-slate-300'}>
+                          {activity.icon}
+                        </div>
+                        <span className="text-sm font-medium">{activity.name}</span>
+                        {activity.fixedTime && (
+                          <span className="text-[10px] bg-amber-200/50 px-1.5 py-0.5 rounded text-amber-700 font-bold">
+                            {activity.fixedTime}h fijo
+                          </span>
+                        )}
                       </div>
-                      <span className="text-sm font-medium">{activity.name}</span>
-                      {activity.fixedTime && (
-                        <span className="text-[10px] bg-amber-200/50 px-1.5 py-0.5 rounded text-amber-700 font-bold">
-                          {activity.fixedTime}h fijo
-                        </span>
+                      {activity.isActive ? (
+                        <CheckCircle2 className="w-4 h-4 text-amber-500" />
+                      ) : (
+                        <Circle className="w-4 h-4 text-slate-200" />
                       )}
-                    </div>
-                    {activity.isActive ? (
-                      <CheckCircle2 className="w-4 h-4 text-amber-500" />
-                    ) : (
-                      <Circle className="w-4 h-4 text-slate-200" />
+                    </button>
+
+                    {activity.isActive && activity.id === 'desarrollo_prof' && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-4"
+                      >
+                        <div className="flex-1">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Horas</label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            value={activity.customHours ?? 0}
+                            onChange={(e) => updateActivityTime(activity.id, 'customHours', Number(e.target.value))}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Minutos</label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            max="59"
+                            value={activity.customMinutes ?? 0}
+                            onChange={(e) => updateActivityTime(activity.id, 'customMinutes', Number(e.target.value))}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                        </div>
+                      </motion.div>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
 
