@@ -89,7 +89,7 @@ export default function App() {
     { id: 'talleres', name: 'Talleres', icon: <PenTool className="w-4 h-4" />, isActive: true },
     { id: 'libro_digital', name: 'Libro Digital', icon: <Book className="w-4 h-4" />, isActive: true },
     { id: 'reuniones_depto', name: 'Reuniones Departamento', icon: <Briefcase className="w-4 h-4" />, fixedTime: 1, isActive: true },
-    { id: 'desarrollo_prof', name: 'Desarrollo Profesional Docente', icon: <Lightbulb className="w-4 h-4" />, fixedTime: 1, isActive: true },
+    { id: 'desarrollo_prof', name: 'Desarrollo Profesional Docente', icon: <Lightbulb className="w-4 h-4" />, isActive: true },
     { id: 'consejo_adm', name: 'Consejo Administrativo', icon: <ShieldCheck className="w-4 h-4" />, fixedTime: 1.5, isActive: false },
     { id: 'ceal', name: 'CEAL', icon: <GraduationCap className="w-4 h-4" />, isActive: false },
     { id: 'refuerzo', name: 'Refuerzo Educativo', icon: <UserPlus className="w-4 h-4" />, isActive: false },
