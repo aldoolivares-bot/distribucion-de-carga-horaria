@@ -112,21 +112,22 @@ export default function App() {
   };
 
   const results = useMemo(() => {
-    // --- Tabla 2019 Logic (65/35) ---
-    // 1. Calculate Pedagogical Hours (HA) as 65% of contract
+    // --- Internal Logic (Updated to 58/42 as requested) ---
+    // Note: UI and PDF still display "65/35" as per user requirement.
+    
+    // 1. Calculate Pedagogical Hours (HA) using 58% of contract
     // 1 HA = 45 min = 0.75 hours
-    const ha = Math.round((contractHours * 0.65) / 0.75);
+    const ha = Math.round((contractHours * 0.58) / 0.75);
     
     // 2. Convert HA to Chronological Hours (HC)
     const hc = ha * 0.75;
     
     // 3. Calculate Recess (Recreo)
-    // Based on the 2019 table ratio: 44h contract -> 38 HA -> 3h Recess
-    // Ratio = 3 / 38
+    // Maintaining the ratio from the 2019 table (3h recess for 38 HA)
     const recreo = ha * (3 / 38);
     
     // 4. Calculate Total No Lectivas (Effective for PEA + Community)
-    // Contract = HC + Recreo + NoLectivas
+    // This will now represent the remaining 42% (approx)
     const noLectivasEfectivas = contractHours - hc - recreo;
     
     const pea = noLectivasEfectivas * 0.5;
@@ -210,16 +211,16 @@ export default function App() {
     doc.text(`Contrato: ${contractHours} horas semanales`, 14, 42);
     doc.text('Basado en Tabla 2019 (Proporción 65/35)', 14, 47);
 
-    // Main Table
+    // Main Table (Summary without specific times as requested)
     autoTable(doc, {
       startY: 55,
-      head: [['Descripción', 'Sigla', 'Tiempo Real']],
+      head: [['Descripción', 'Sigla']],
       body: [
-        ['Horas Lectivas (Docencia Aula)', 'HC', hcTime.formatted],
-        ['Recreos', 'R', recreoTime.formatted],
-        ['Horas No Lectivas (Disponibles)', 'HNL', totalNoLectivasTime.formatted],
-        ['  - Preparación y Evaluación (50% HNL)', 'PEA', peaTime.formatted],
-        ['  - Gestión y Comunidad (50% HNL)', 'GC', comunidadTime.formatted],
+        ['Horas Lectivas (Docencia Aula)', 'HC'],
+        ['Recreos', 'R'],
+        ['Horas No Lectivas (Disponibles)', 'HNL'],
+        ['  - Preparación y Evaluación (50% HNL)', 'PEA'],
+        ['  - Gestión y Comunidad (50% HNL)', 'GC'],
       ],
       theme: 'striped',
       headStyles: { fillColor: [59, 130, 246] },
