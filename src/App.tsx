@@ -90,7 +90,7 @@ export default function App() {
     { id: 'consejo_tecnico', name: 'Consejo Técnico', icon: <Users className="w-4 h-4" />, fixedTime: 1.5, isActive: true },
     { id: 'talleres', name: 'Talleres', icon: <PenTool className="w-4 h-4" />, isActive: true },
     { id: 'libro_digital', name: 'Libro Digital', icon: <Book className="w-4 h-4" />, isActive: true },
-    { id: 'reuniones_depto', name: 'Reuniones Departamento', icon: <Briefcase className="w-4 h-4" />, fixedTime: 1, isActive: true },
+    { id: 'reuniones_depto', name: 'Reuniones Departamento', icon: <Briefcase className="w-4 h-4" />, isActive: true },
     { id: 'desarrollo_prof', name: 'Desarrollo Profesional Docente', icon: <Lightbulb className="w-4 h-4" />, isActive: true },
     { id: 'consejo_adm', name: 'Consejo Administrativo', icon: <ShieldCheck className="w-4 h-4" />, fixedTime: 1.5, isActive: false },
     { id: 'ceal', name: 'CEAL', icon: <GraduationCap className="w-4 h-4" />, isActive: false },
@@ -148,20 +148,21 @@ export default function App() {
   const communityDistribution = useMemo(() => {
     const activeActivities = activities.filter(a => a.isActive);
     
-    // Fixed activities are those with fixedTime OR those with custom inputs (like Desarrollo Prof)
+    const isManual = (a: CommunityActivity) => 
+      a.customHours !== undefined || a.customMinutes !== undefined;
+
+    // Fixed activities are those with fixedTime OR those with custom inputs
     const fixedActivities = activeActivities.filter(a => 
-      a.fixedTime !== undefined || 
-      (a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined))
+      a.fixedTime !== undefined || isManual(a)
     );
     
     const variableActivities = activeActivities.filter(a => 
-      a.fixedTime === undefined && 
-      !(a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined))
+      a.fixedTime === undefined && !isManual(a)
     );
 
     const totalFixedTime = fixedActivities.reduce((sum, a) => {
       if (a.fixedTime !== undefined) return sum + a.fixedTime;
-      if (a.id === 'desarrollo_prof') {
+      if (isManual(a)) {
         const h = a.customHours || 0;
         const m = (a.customMinutes || 0) / 60;
         return sum + h + m;
@@ -174,7 +175,7 @@ export default function App() {
 
     return activeActivities.map(a => {
       if (a.fixedTime !== undefined) return { ...a, time: a.fixedTime };
-      if (a.id === 'desarrollo_prof' && (a.customHours !== undefined || a.customMinutes !== undefined)) {
+      if (isManual(a)) {
         return { ...a, time: (a.customHours || 0) + (a.customMinutes || 0) / 60 };
       }
       return { ...a, time: timePerVariable };
@@ -376,7 +377,7 @@ export default function App() {
                       )}
                     </button>
 
-                    {activity.isActive && activity.id === 'desarrollo_prof' && (
+                    {activity.isActive && ['desarrollo_prof', 'talleres', 'mruta', 'reuniones_depto'].includes(activity.id) && (
                       <motion.div 
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: 'auto' }}
