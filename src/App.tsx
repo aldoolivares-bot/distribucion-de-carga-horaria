@@ -173,7 +173,8 @@ export default function App() {
     selectedStudentId: ''
   });
   const [scanResult, setScanResult] = useState<{ [q: number]: string } | null>(null);
-  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'correcting' | 'finished'>('idle');
+  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'finished'>('idle');
+  const [lastScanTime, setLastScanTime] = useState(0);
 
   // SIMCE State
   const [schoolInfo, setSchoolInfo] = useState({
@@ -187,6 +188,24 @@ export default function App() {
 
   const webcamRef = React.useRef<Webcam>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+
+  // Real-time processing loop
+  React.useEffect(() => {
+    let animationId: number;
+    
+    const loop = async () => {
+      if (scannerStatus === 'scanning' && webcamRef.current) {
+        await processScan(true); 
+      }
+      animationId = requestAnimationFrame(loop);
+    };
+
+    if (scannerStatus === 'scanning') {
+      animationId = requestAnimationFrame(loop);
+    }
+
+    return () => cancelAnimationFrame(animationId);
+  }, [scannerStatus]);
 
   const addStudent = () => {
     setStudents(prev => [...prev, { 
@@ -433,138 +452,138 @@ export default function App() {
     doc.save('Hoja_Respuestas_SIMCE.pdf');
   };
 
-  const processScan = async () => {
+  const processScan = async (silent: boolean = false) => {
     if (!webcamRef.current) return;
-    setScannerStatus('correcting');
     
     const imageSrc = webcamRef.current.getScreenshot();
     if (!imageSrc) return;
 
     const img = new Image();
     img.src = imageSrc;
-    img.onload = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return;
+    await new Promise(resolve => img.onload = resolve);
 
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
 
-        // 1. Threshold image to find black markers
-        const imageData = ctx.getImageData(0, 0, img.width, img.height);
-        const data = imageData.data;
-        
-        // Find corner markers (looking for clusters of black pixels)
-        const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
-            let bestX = 0, bestY = 0, maxDarkness = 0;
-            const step = 4;
-            for (let y = startY; y < endY; y += step) {
-                for (let x = startX; x < endX; x += step) {
-                    const idx = (y * img.width + x) * 4;
-                    const brightness = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                    if (brightness < 60) {
-                        // Check local area density
-                        let localCount = 0;
-                        for (let dy = -5; dy <= 5; dy++) {
-                            for (let dx = -5; dx <= 5; dx++) {
-                                const lIdx = ((y+dy) * img.width + (x+dx)) * 4;
-                                if (lIdx >= 0 && lIdx < data.length) {
-                                    if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 60) localCount++;
-                                }
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+
+    const imageData = ctx.getImageData(0, 0, img.width, img.height);
+    const data = imageData.data;
+    
+    const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
+        let bestX = 0, bestY = 0, maxScore = 0;
+        const step = 8;
+        for (let y = startY; y < endY; y += step) {
+            for (let x = startX; x < endX; x += step) {
+                const idx = (y * img.width + x) * 4;
+                const brightness = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                if (brightness < 70) {
+                    let density = 0;
+                    const r = 6;
+                    for (let dy = -r; dy <= r; dy += 2) {
+                        for (let dx = -r; dx <= r; dx += 2) {
+                            const lIdx = (Math.floor(y+dy) * img.width + Math.floor(x+dx)) * 4;
+                            if (lIdx >= 0 && lIdx < data.length) {
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 70) density++;
                             }
                         }
-                        if (localCount > maxDarkness) {
-                            maxDarkness = localCount;
-                            bestX = x;
-                            bestY = y;
-                        }
+                    }
+                    if (density > maxScore) {
+                        maxScore = density;
+                        bestX = x;
+                        bestY = y;
                     }
                 }
-            }
-            return { x: bestX, y: bestY };
-        };
-
-        const q = 0.25; // Quarter size for search areas
-        const corners = {
-            tl: findCorner(0, 0, img.width * q, img.height * q),
-            tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
-            bl: findCorner(0, img.height * (1-q), img.width * q, img.height),
-            br: findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height)
-        };
-
-        // Draw detected corners for feedback
-        ctx.fillStyle = '#10b981'; // emerald-500
-        Object.values(corners).forEach(c => {
-            ctx.beginPath();
-            ctx.arc(c.x, c.y, 10, 0, Math.PI * 2);
-            ctx.fill();
-        });
-
-        // 2. Rectify and process bubbles
-        const detectedAnswers: { [q: number]: string } = {};
-        const options = ['A', 'B', 'C', 'D'];
-        
-        for (let i = 0; i < scannerConfig.questionCount; i++) {
-            const col = Math.floor(i / 20);
-            const row = i % 20;
-
-            // Simple bilinear interpolation to find point within the 4 corners
-            const tx = (15 + (col * 22)) / 100; // Relative horizontal position
-            const ty = (18 + (row * 3.8)) / 100; // Relative vertical position
-
-            // Top edge interpolation
-            const topX = corners.tl.x + tx * (corners.tr.x - corners.tl.x);
-            const topY = corners.tl.y + tx * (corners.tr.y - corners.tl.y);
-            // Bottom edge interpolation
-            const bottomX = corners.bl.x + tx * (corners.br.x - corners.bl.x);
-            const bottomY = corners.bl.y + tx * (corners.br.y - corners.bl.y);
-            // Final point interpolation
-            const qX = topX + ty * (bottomX - topX);
-            const qY = topY + ty * (bottomY - topY);
-
-            let bestDarkness = -1;
-            let detectedOpt = '-';
-
-            options.forEach((opt, oIdx) => {
-                const bubbleX = qX + (4 + oIdx * 3.5) * (img.width / 100);
-                const bubbleY = qY;
-                
-                // Sample area
-                const sampleSize = Math.max(2, Math.floor(img.width / 150));
-                let totalDark = 0;
-                for (let dy = -sampleSize; dy <= sampleSize; dy++) {
-                    for (let dx = -sampleSize; dx <= sampleSize; dx++) {
-                        const sIdx = (Math.floor(bubbleY + dy) * img.width + Math.floor(bubbleX + dx)) * 4;
-                        if (sIdx >= 0 && sIdx < data.length) {
-                            const b = (data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3;
-                            if (b < 100) totalDark++;
-                        }
-                    }
-                }
-
-                if (totalDark > bestDarkness) {
-                    bestDarkness = totalDark;
-                    detectedOpt = opt;
-                }
-
-                // Visual feedback for bubble detection
-                ctx.beginPath();
-                ctx.arc(bubbleX, bubbleY, sampleSize + 2, 0, Math.PI * 2);
-                ctx.strokeStyle = totalDark > 5 ? '#3b82f6' : '#cbd5e1';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-            });
-
-            if (bestDarkness > 3) {
-                detectedAnswers[i + 1] = detectedOpt;
             }
         }
-
-        setScanResult(detectedAnswers);
-        setScannerStatus('finished');
+        return { x: bestX, y: bestY, score: maxScore };
     };
+
+    const q = 0.2;
+    const corners = {
+        tl: findCorner(0, 0, img.width * q, img.height * q),
+        tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
+        bl: findCorner(0, img.height * (1-q), img.width * q, img.height),
+        br: findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height)
+    };
+
+    const hasAllCorners = Object.values(corners).every(c => c.score > 20);
+
+    ctx.fillStyle = hasAllCorners ? '#10b981' : '#ef4444';
+    Object.values(corners).forEach(c => {
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    });
+
+    if (!hasAllCorners) return;
+
+    const detectedAnswers: { [q: number]: string } = {};
+    const options = ['A', 'B', 'C', 'D'];
+    let confidenceSum = 0;
+    
+    for (let i = 0; i < scannerConfig.questionCount; i++) {
+        const col = Math.floor(i / 20);
+        const row = i % 20;
+
+        const tx = (16 + (col * 22)) / 100;
+        const ty = (19 + (row * 3.8)) / 100;
+
+        const topX = corners.tl.x + tx * (corners.tr.x - corners.tl.x);
+        const topY = corners.tl.y + tx * (corners.tr.y - corners.tl.y);
+        const bottomX = corners.bl.x + tx * (corners.br.x - corners.bl.x);
+        const bottomY = corners.bl.y + tx * (corners.br.y - corners.bl.y);
+        const qX = topX + ty * (bottomX - topX);
+        const qY = topY + ty * (bottomY - topY);
+
+        let bestDarkness = -1;
+        let detectedOpt = '-';
+
+        options.forEach((opt, oIdx) => {
+            const bubbleX = qX + (3.5 + oIdx * 3.6) * (img.width / 100);
+            const bubbleY = qY;
+            
+            const sampleSize = Math.max(2, Math.floor(img.width / 140));
+            let totalDark = 0;
+            for (let dy = -sampleSize; dy <= sampleSize; dy++) {
+                for (let dx = -sampleSize; dx <= sampleSize; dx++) {
+                    const sIdx = (Math.floor(bubbleY + dy) * img.width + Math.floor(bubbleX + dx)) * 4;
+                    if (sIdx >= 0 && sIdx < data.length) {
+                        if ((data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3 < 110) totalDark++;
+                    }
+                }
+            }
+
+            if (totalDark > bestDarkness) {
+                bestDarkness = totalDark;
+                detectedOpt = opt;
+            }
+
+            ctx.beginPath();
+            ctx.arc(bubbleX, bubbleY, sampleSize, 0, Math.PI * 2);
+            ctx.strokeStyle = totalDark > 8 ? '#3b82f6' : '#cbd5e1';
+            ctx.stroke();
+        });
+
+        if (bestDarkness > 6) {
+            detectedAnswers[i + 1] = detectedOpt;
+            confidenceSum++;
+        }
+    }
+
+    if (!silent || (confidenceSum > scannerConfig.questionCount * 0.8)) {
+        setScanResult(detectedAnswers);
+        if (confidenceSum > scannerConfig.questionCount * 0.8) {
+            setScannerStatus('finished');
+        }
+    }
   };
 
   const saveScanToStudent = () => {
@@ -1195,27 +1214,41 @@ export default function App() {
                         </div>
 
                         <div className="relative aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800">
-                            {scannerStatus === 'idle' ? (
+                            {scannerStatus !== 'finished' ? (
                                 <>
                                     <Webcam
                                         audio={false}
                                         ref={webcamRef}
                                         screenshotFormat="image/jpeg"
-                                        className="w-full h-full object-cover opacity-60"
+                                        mirrored={false}
+                                        className={`w-full h-full object-cover transition-opacity duration-500 ${scannerStatus === 'scanning' ? 'opacity-40' : 'opacity-80'}`}
                                         videoConstraints={{ facingMode: "environment" }}
                                     />
-                                    <div className="absolute inset-0 border-[40px] border-black/40 pointer-events-none flex items-center justify-center">
-                                        <div className="w-[80%] h-[90%] border-2 border-dashed border-white/40 flex flex-col items-center justify-center">
-                                            <p className="text-white text-xs font-bold opacity-60">ALINEAR HOJA AQUÍ</p>
+                                    
+                                    <canvas 
+                                        ref={canvasRef}
+                                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                                    />
+
+                                    {scannerStatus === 'idle' ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+                                            <div className="w-64 h-80 border-2 border-dashed border-white/40 rounded-xl mb-6 flex items-center justify-center">
+                                                <Scan className="w-12 h-12 text-white/20" />
+                                            </div>
+                                            <button 
+                                                onClick={() => setScannerStatus('scanning')}
+                                                className="flex items-center gap-3 bg-blue-600 text-white px-8 py-4 rounded-2xl text-lg font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                                            >
+                                                <Camera className="w-6 h-6" />
+                                                INICIAR ESCÁNER
+                                            </button>
                                         </div>
-                                    </div>
-                                    <button 
-                                        onClick={processScan}
-                                        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-blue-600 text-white px-8 py-4 rounded-2xl text-lg font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                                    >
-                                        <Scan className="w-6 h-6" />
-                                        ESCANEAR AHORA
-                                    </button>
+                                    ) : (
+                                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md text-white px-4 py-2 rounded-full text-[10px] font-bold tracking-widest flex items-center gap-2">
+                                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                                            BUSCANDO MARCADORES...
+                                        </div>
+                                    )}
                                 </>
                             ) : (
                                 <canvas 
