@@ -35,7 +35,15 @@ import {
   GraduationCap as GraduationIcon,
   Trash2,
   PlusCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Camera,
+  Printer,
+  MousePointer2,
+  CheckCircle,
+  XCircle,
+  Scan,
+  RefreshCcw,
+  Save
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -48,6 +56,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import Webcam from 'react-webcam';
 
 // --- Types ---
 interface WorkloadData {
@@ -152,9 +161,19 @@ const SIMCE_CONFIG: SimceAppConfig[] = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'jornada' | 'simce'>('jornada');
+  const [activeTab, setActiveTab] = useState<'jornada' | 'simce' | 'scanner'>('jornada');
   const [contractHours, setContractHours] = useState<number>(44);
   const [teacherName, setTeacherName] = useState<string>('');
+
+  // Scanner State
+  const [scannerConfig, setScannerConfig] = useState({
+    activeAppIndex: 0,
+    questionCount: 30,
+    answerKey: {} as { [q: number]: string },
+    selectedStudentId: ''
+  });
+  const [scanResult, setScanResult] = useState<{ [q: number]: string } | null>(null);
+  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'correcting' | 'finished'>('idle');
 
   // SIMCE State
   const [schoolInfo, setSchoolInfo] = useState({
@@ -165,6 +184,9 @@ export default function App() {
   const [students, setStudents] = useState<StudentSimceData[]>([
     { id: '1', name: 'LURDES CAMILA AVALOS', scores: {} }
   ]);
+
+  const webcamRef = React.useRef<Webcam>(null);
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
 
   const addStudent = () => {
     setStudents(prev => [...prev, { 
@@ -365,7 +387,165 @@ export default function App() {
     doc.save(`Jornada_Docente_${teacherName.replace(/\s+/g, '_') || 'Informe'}.pdf`);
   };
 
-  // Warning for community time overflow
+  const exportAnswerSheet = () => {
+    const doc = new jsPDF();
+    const qCount = scannerConfig.questionCount;
+    
+    doc.setFontSize(16);
+    doc.text('HOJA DE RESPUESTAS - ENSAYO SIMCE', 105, 20, { align: 'center' });
+    doc.setFontSize(10);
+    doc.text('Nombre:', 20, 35);
+    doc.line(35, 35, 100, 35);
+    doc.text('Fecha:', 110, 35);
+    doc.line(125, 35, 160, 35);
+
+    // Anchor points (corners)
+    const margin = 10;
+    const s = 4;
+    doc.rect(margin, margin, s, s, 'F'); // TL
+    doc.rect(210 - margin - s, margin, s, s, 'F'); // TR
+    doc.rect(margin, 297 - margin - s, s, s, 'F'); // BL
+    doc.rect(210 - margin - s, 297 - margin - s, s, s, 'F'); // BR
+
+    // Bubbles
+    const startY = 50;
+    const colSpacing = 45;
+    const rowSpacing = 8;
+    const options = ['A', 'B', 'C', 'D'];
+
+    for (let i = 0; i < qCount; i++) {
+        const col = Math.floor(i / 20);
+        const row = i % 20;
+        const x = 20 + (col * colSpacing);
+        const y = startY + (row * rowSpacing);
+
+        doc.setFontSize(8);
+        doc.text(`${i + 1}.`, x, y + 2);
+        
+        options.forEach((opt, oIdx) => {
+            const bx = x + 8 + (oIdx * 8);
+            doc.circle(bx, y, 2.5, 'S');
+            doc.setFontSize(6);
+            doc.text(opt, bx, y + 1, { align: 'center' });
+        });
+    }
+
+    doc.save('Hoja_Respuestas_SIMCE.pdf');
+  };
+
+  const processScan = async () => {
+    if (!webcamRef.current) return;
+    setScannerStatus('correcting');
+    
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (!imageSrc) return;
+
+    const img = new Image();
+    img.src = imageSrc;
+    img.onload = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        // Simple bubble detection logic
+        // In a production app, we would use corner detection markers to rectify
+        // Here we use a relative grid assuming the user aligned the sheet well
+        const detectedAnswers: { [q: number]: string } = {};
+        const options = ['A', 'B', 'C', 'D'];
+        
+        // Grid parameters relative to aligned image
+        const gridStartX = img.width * 0.15;
+        const gridStartY = img.height * 0.15;
+        const colW = img.width * 0.22;
+        const rowH = img.height * 0.04;
+
+        for (let i = 0; i < scannerConfig.questionCount; i++) {
+            const col = Math.floor(i / 20);
+            const row = i % 20;
+            const qX = gridStartX + (col * colW);
+            const qY = gridStartY + (row * rowH);
+
+            let darkValue = -1;
+            let detectedOpt = '-';
+
+            options.forEach((opt, oIdx) => {
+                const bubbleX = qX + img.width * 0.04 + (oIdx * img.width * 0.035);
+                const bubbleY = qY;
+                
+                // Sample center of bubble
+                const imageData = ctx.getImageData(bubbleX - 2, bubbleY - 2, 4, 4);
+                let totalDarkness = 0;
+                for (let p = 0; p < imageData.data.length; p += 4) {
+                    const r = imageData.data[p];
+                    const g = imageData.data[p+1];
+                    const b = imageData.data[p+2];
+                    const brightness = (r + g + b) / 3;
+                    if (brightness < 100) totalDarkness++; // It's dark
+                }
+
+                if (totalDarkness > darkValue) {
+                    darkValue = totalDarkness;
+                    detectedOpt = opt;
+                }
+
+                // Draw debug hints
+                ctx.strokeStyle = totalDarkness > 5 ? 'red' : 'blue';
+                ctx.strokeRect(bubbleX - 2, bubbleY - 2, 4, 4);
+            });
+
+            if (darkValue > 4) { // Confidence threshold
+                detectedAnswers[i + 1] = detectedOpt;
+            }
+        }
+
+        setScanResult(detectedAnswers);
+        setScannerStatus('finished');
+    };
+  };
+
+  const saveScanToStudent = () => {
+    if (!scanResult || !scannerConfig.selectedStudentId) return;
+    
+    // 1. Calculate scores by category for the target student
+    const studentId = scannerConfig.selectedStudentId;
+    const appIdx = scannerConfig.activeAppIndex;
+    const config = SIMCE_CONFIG[appIdx];
+    
+    const categoryScores: { [catIdx: number]: number } = {};
+    
+    config.categories.forEach((cat, catIdx) => {
+        const questionsInCat = cat.questions.split('-').map(Number);
+        let correctCount = 0;
+        
+        questionsInCat.forEach(qNum => {
+            const userAns = scanResult[qNum];
+            const correctAns = scannerConfig.answerKey[qNum];
+            if (userAns && correctAns && userAns === correctAns) {
+                correctCount++;
+            }
+        });
+        
+        categoryScores[catIdx] = correctCount;
+    });
+
+    // 2. Update students state
+    setStudents(prev => prev.map(s => {
+        if (s.id !== studentId) return s;
+        const newScores = { ...s.scores };
+        newScores[appIdx] = categoryScores;
+        return { ...s, scores: newScores };
+    }));
+
+    // 3. Reset and switch tab
+    setScannerStatus('idle');
+    setScanResult(null);
+    setActiveTab('simce');
+  };
   const totalFixedTime = activities.filter(a => a.isActive && a.fixedTime).reduce((sum, a) => sum + (a.fixedTime || 0), 0);
   const isCommunityOverloaded = totalFixedTime > results.comunidad;
 
@@ -428,6 +608,17 @@ export default function App() {
           >
             <ClipboardCheck className="w-4 h-4" />
             Análisis SIMCE
+          </button>
+          <button 
+            onClick={() => setActiveTab('scanner')}
+            className={`px-6 py-4 text-sm font-bold transition-all border-b-2 flex items-center gap-2 ${
+              activeTab === 'scanner' 
+                ? 'border-blue-600 text-blue-600 bg-white shadow-[0_-4px_0_0_inset_white]' 
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Scan className="w-4 h-4" />
+            Escáner SIMCE
           </button>
         </div>
       </div>
@@ -699,158 +890,324 @@ export default function App() {
             </section>
             </div>
           </motion.div>
-        ) : (
-            <motion.div 
-              key="simce"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="space-y-8"
-            >
-              {/* SIMCE Analysis Section */}
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8 pb-6 border-b border-slate-100">
-                  <div className="space-y-1">
-                    <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                      <FileSpreadsheet className="w-6 h-6 text-emerald-500" />
-                      Análisis Ensayos Tipo SIMCE
-                    </h2>
-                    <p className="text-sm text-slate-500 font-medium">Control de habilidades y progreso por estudiante</p>
-                  </div>
-                  <button 
-                    onClick={addStudent}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm"
-                  >
-                    <PlusCircle className="w-4 h-4" />
-                    Añadir Estudiante
-                  </button>
+        ) : activeTab === 'simce' ? (
+          <motion.div 
+            key="simce"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="space-y-8"
+          >
+            {/* SIMCE Analysis Section */}
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8 pb-6 border-b border-slate-100">
+                <div className="space-y-1">
+                  <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                    <FileSpreadsheet className="w-6 h-6 text-emerald-500" />
+                    Análisis Ensayos Tipo SIMCE
+                  </h2>
+                  <p className="text-sm text-slate-500 font-medium">Control de habilidades y progreso por estudiante</p>
                 </div>
+                <button 
+                  onClick={addStudent}
+                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  Añadir Estudiante
+                </button>
+              </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Establecimiento</label>
-                    <input 
-                      type="text" 
-                      value={schoolInfo.establishment}
-                      onChange={(e) => setSchoolInfo(prev => ({ ...prev, establishment: e.target.value }))}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Curso</label>
-                    <input 
-                      type="text" 
-                      value={schoolInfo.course}
-                      onChange={(e) => setSchoolInfo(prev => ({ ...prev, course: e.target.value }))}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                  </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Establecimiento</label>
+                  <input 
+                    type="text" 
+                    value={schoolInfo.establishment}
+                    onChange={(e) => setSchoolInfo(prev => ({ ...prev, establishment: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
                 </div>
-
-                <div className="overflow-x-auto -mx-8">
-                  <div className="min-w-[1200px] px-8">
-                    <table className="w-full border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50">
-                          <th rowSpan={2} className="p-4 border border-slate-200 text-xs font-bold text-slate-500 text-left w-64">Nombre del Estudiante</th>
-                          {SIMCE_CONFIG.map((app, appIdx) => (
-                            <th key={appIdx} colSpan={app.categories.length * 2} className="p-2 border border-slate-200 text-[10px] font-black uppercase text-center bg-slate-100 text-slate-600">
-                              {app.name}
-                            </th>
-                          ))}
-                          <th rowSpan={2} className="p-2 border border-slate-200"></th>
-                        </tr>
-                        <tr className="bg-slate-50">
-                          {SIMCE_CONFIG.map((app, appIdx) => (
-                            <React.Fragment key={appIdx}>
-                              {app.categories.map((cat, catIdx) => (
-                                <React.Fragment key={catIdx}>
-                                  <th className="p-2 border border-slate-200 text-[9px] font-bold text-slate-500 w-20 text-center leading-tight">
-                                    {cat.name}
-                                    <div className="text-[8px] opacity-60 font-normal">Total: {cat.total}</div>
-                                  </th>
-                                  <th className="p-2 border border-slate-200 text-[9px] font-bold text-emerald-600 w-16 text-center">%</th>
-                                </React.Fragment>
-                              ))}
-                            </React.Fragment>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {students.map((student) => (
-                          <tr key={student.id} className="hover:bg-slate-50/50 transition-colors group">
-                            <td className="p-2 border border-slate-200">
-                              <input 
-                                type="text"
-                                placeholder="Ingresar nombre..."
-                                value={student.name}
-                                onChange={(e) => updateStudentName(student.id, e.target.value)}
-                                className="w-full bg-transparent border-none outline-none text-sm font-medium focus:text-blue-600"
-                              />
-                            </td>
-                            {SIMCE_CONFIG.map((app, appIdx) => (
-                              <React.Fragment key={appIdx}>
-                                {app.categories.map((cat, catIdx) => {
-                                  const score = student.scores[appIdx]?.[catIdx] || 0;
-                                  const percentage = cat.total > 0 ? (score / cat.total) * 100 : 0;
-                                  return (
-                                    <React.Fragment key={catIdx}>
-                                      <td className="p-2 border border-slate-200 text-center">
-                                        <input 
-                                          type="number"
-                                          min="0"
-                                          max={cat.total}
-                                          value={score || ''}
-                                          onChange={(e) => updateStudentScore(student.id, appIdx, catIdx, Number(e.target.value))}
-                                          className="w-12 bg-white border border-slate-100 rounded text-center text-sm font-bold focus:border-emerald-500 outline-none"
-                                          placeholder="0"
-                                        />
-                                      </td>
-                                      <td className={`p-2 border border-slate-200 text-center text-[10px] font-bold ${percentage >= 80 ? 'text-emerald-500' : percentage >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
-                                        {cat.total > 0 ? `${percentage.toFixed(1)}%` : '-'}
-                                      </td>
-                                    </React.Fragment>
-                                  );
-                                })}
-                              </React.Fragment>
-                            ))}
-                            <td className="p-2 border border-slate-200 text-center">
-                              <button 
-                                onClick={() => removeStudent(student.id)}
-                                className="p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-red-50"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                        {students.length === 0 && (
-                          <tr>
-                            <td colSpan={100} className="p-12 text-center text-slate-400 font-medium italic">
-                              No hay estudiantes registrados. Haz clic en "Añadir Estudiante" para comenzar.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Curso</label>
+                  <input 
+                    type="text" 
+                    value={schoolInfo.course}
+                    onChange={(e) => setSchoolInfo(prev => ({ ...prev, course: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
                 </div>
               </div>
 
-              {/* Informative Footer for SIMCE */}
-              <div className="bg-blue-50 border border-blue-100 p-6 rounded-2xl flex gap-4">
-                <div className="bg-blue-600 p-2 h-fit rounded-lg shadow-sm">
-                  <Info className="w-5 h-5 text-white" />
+              <div className="overflow-x-auto -mx-8">
+                <div className="min-w-[1200px] px-8">
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50">
+                        <th rowSpan={2} className="p-4 border border-slate-200 text-xs font-bold text-slate-500 text-left w-64">Nombre del Estudiante</th>
+                        {SIMCE_CONFIG.map((app, appIdx) => (
+                          <th key={appIdx} colSpan={app.categories.length * 2} className="p-2 border border-slate-200 text-[10px] font-black uppercase text-center bg-slate-100 text-slate-600">
+                            {app.name}
+                          </th>
+                        ))}
+                        <th rowSpan={2} className="p-2 border border-slate-200"></th>
+                      </tr>
+                      <tr className="bg-slate-50">
+                        {SIMCE_CONFIG.map((app, appIdx) => (
+                          <React.Fragment key={appIdx}>
+                            {app.categories.map((cat, catIdx) => (
+                              <React.Fragment key={catIdx}>
+                                <th className="p-2 border border-slate-200 text-[9px] font-bold text-slate-500 w-20 text-center leading-tight">
+                                  {cat.name}
+                                  <div className="text-[8px] opacity-60 font-normal">Total: {cat.total}</div>
+                                </th>
+                                <th className="p-2 border border-slate-200 text-[9px] font-bold text-emerald-600 w-16 text-center">%</th>
+                              </React.Fragment>
+                            ))}
+                          </React.Fragment>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {students.map((student) => (
+                        <tr key={student.id} className="hover:bg-slate-50/50 transition-colors group">
+                          <td className="p-2 border border-slate-200">
+                            <input 
+                              type="text"
+                              placeholder="Ingresar nombre..."
+                              value={student.name}
+                              onChange={(e) => updateStudentName(student.id, e.target.value)}
+                              className="w-full bg-transparent border-none outline-none text-sm font-medium focus:text-blue-600"
+                            />
+                          </td>
+                          {SIMCE_CONFIG.map((app, appIdx) => (
+                            <React.Fragment key={appIdx}>
+                              {app.categories.map((cat, catIdx) => {
+                                const score = student.scores[appIdx]?.[catIdx] || 0;
+                                const percentage = cat.total > 0 ? (score / cat.total) * 100 : 0;
+                                return (
+                                  <React.Fragment key={catIdx}>
+                                    <td className="p-2 border border-slate-200 text-center">
+                                      <input 
+                                        type="number"
+                                        min="0"
+                                        max={cat.total}
+                                        value={score || ''}
+                                        onChange={(e) => updateStudentScore(student.id, appIdx, catIdx, Number(e.target.value))}
+                                        className="w-12 bg-white border border-slate-100 rounded text-center text-sm font-bold focus:border-emerald-500 outline-none"
+                                        placeholder="0"
+                                      />
+                                    </td>
+                                    <td className={`p-2 border border-slate-200 text-center text-[10px] font-bold ${percentage >= 80 ? 'text-emerald-500' : percentage >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
+                                      {cat.total > 0 ? `${percentage.toFixed(1)}%` : '-'}
+                                    </td>
+                                  </React.Fragment>
+                                );
+                              })}
+                            </React.Fragment>
+                          ))}
+                          <td className="p-2 border border-slate-200 text-center">
+                            <button 
+                              onClick={() => removeStudent(student.id)}
+                              className="p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-red-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-                <div className="space-y-1">
-                  <h4 className="font-bold text-blue-900 text-sm">Instrucciones del Analizador</h4>
-                  <p className="text-xs text-blue-700 leading-relaxed max-w-2xl">
-                    Ingresa solo el número de respuestas correctas en cada casilla. El sistema calculará el porcentaje basado en los requerimientos del ensayo: 
-                    <strong> Aplicación 1 (30 preguntas)</strong>, 
-                    <strong> Aplicación 2 (30 preguntas)</strong> y 
-                    <strong> Aplicación 3 (35 preguntas)</strong>. 
-                    Los colores indican el nivel de logro: <span className="text-emerald-600 font-bold">Verde (80%+)</span>, <span className="text-amber-600 font-bold">Ámbar (50-79%)</span>, <span className="text-red-600 font-bold">Rojo (&lt;50%)</span>.
-                  </p>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-100 p-6 rounded-2xl flex gap-4">
+              <div className="bg-blue-600 p-2 h-fit rounded-lg shadow-sm">
+                <Info className="w-5 h-5 text-white" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-bold text-blue-900 text-sm">Instrucciones del Analizador</h4>
+                <p className="text-xs text-blue-700 leading-relaxed max-w-2xl">
+                  Ingresa solo el número de respuestas correctas en cada casilla. El sistema calculará el porcentaje basado en los requerimientos del ensayo.
+                  Los colores indican el nivel de logro: <span className="text-emerald-600 font-bold">Verde (80%+)</span>, <span className="text-amber-600 font-bold">Ámbar (50-79%)</span>, <span className="text-red-600 font-bold">Rojo (&lt;50%)</span>.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        ) : (
+            <motion.div 
+              key="scanner"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-6"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Configuration Panel */}
+                <div className="space-y-6">
+                  <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                        <Save className="w-5 h-5 text-blue-500" />
+                        Configuración Escaneo
+                    </h3>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="text-[10px] font-black uppercase text-slate-400">Ensayo a Corregir</label>
+                            <select 
+                                value={scannerConfig.activeAppIndex}
+                                onChange={(e) => setScannerConfig(prev => ({ ...prev, activeAppIndex: Number(e.target.value) }))}
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none"
+                            >
+                                {SIMCE_CONFIG.map((app, idx) => (
+                                    <option key={idx} value={idx}>{app.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black uppercase text-slate-400">Preguntas</label>
+                            <select 
+                                value={scannerConfig.questionCount}
+                                onChange={(e) => setScannerConfig(prev => ({ ...prev, questionCount: Number(e.target.value) }))}
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none"
+                            >
+                                <option value={20}>20 Preguntas</option>
+                                <option value={30}>30 Preguntas</option>
+                                <option value={40}>40 Preguntas</option>
+                                <option value={60}>60 Preguntas</option>
+                            </select>
+                        </div>
+                        <button 
+                            onClick={exportAnswerSheet}
+                            className="w-full flex items-center justify-center gap-2 bg-slate-800 text-white p-3 rounded-xl text-sm font-bold hover:bg-slate-900 transition-all"
+                        >
+                            <Printer className="w-4 h-4" />
+                            Generar Hoja Imprimible
+                        </button>
+                    </div>
+                  </section>
+
+                  <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                        <MousePointer2 className="w-5 h-5 text-emerald-500" />
+                        Clave de Respuestas
+                    </h3>
+                    <div className="grid grid-cols-5 gap-2 max-h-[300px] overflow-y-auto pr-2">
+                        {Array.from({ length: scannerConfig.questionCount }).map((_, i) => {
+                            const q = i + 1;
+                            return (
+                                <div key={q} className="flex flex-col gap-1 items-center bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                    <span className="text-[9px] font-bold text-slate-400">{q}</span>
+                                    <select 
+                                        value={scannerConfig.answerKey[q] || ''}
+                                        onChange={(e) => setScannerConfig(prev => ({
+                                            ...prev,
+                                            answerKey: { ...prev.answerKey, [q]: e.target.value }
+                                        }))}
+                                        className="bg-transparent text-[11px] font-black outline-none appearance-none cursor-pointer"
+                                    >
+                                        <option value="">-</option>
+                                        <option value="A">A</option>
+                                        <option value="B">B</option>
+                                        <option value="C">C</option>
+                                        <option value="D">D</option>
+                                    </select>
+                                </div>
+                            );
+                        })}
+                    </div>
+                  </section>
+                </div>
+
+                {/* Camera / Processor Panel */}
+                <div className="lg:col-span-2 space-y-6">
+                    <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-lg font-bold flex items-center gap-2">
+                                <Camera className="w-5 h-5 text-blue-500" />
+                                Captura de Imagen
+                            </h3>
+                            <div className="flex gap-2">
+                                <button 
+                                    onClick={() => setScannerStatus('idle')}
+                                    className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+                                >
+                                    <RefreshCcw className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="relative aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800">
+                            {scannerStatus === 'idle' ? (
+                                <>
+                                    <Webcam
+                                        audio={false}
+                                        ref={webcamRef}
+                                        screenshotFormat="image/jpeg"
+                                        className="w-full h-full object-cover opacity-60"
+                                        videoConstraints={{ facingMode: "environment" }}
+                                    />
+                                    <div className="absolute inset-0 border-[40px] border-black/40 pointer-events-none flex items-center justify-center">
+                                        <div className="w-[80%] h-[90%] border-2 border-dashed border-white/40 flex flex-col items-center justify-center">
+                                            <p className="text-white text-xs font-bold opacity-60">ALINEAR HOJA AQUÍ</p>
+                                        </div>
+                                    </div>
+                                    <button 
+                                        onClick={processScan}
+                                        className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-blue-600 text-white px-8 py-4 rounded-2xl text-lg font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                                    >
+                                        <Scan className="w-6 h-6" />
+                                        ESCANEAR AHORA
+                                    </button>
+                                </>
+                            ) : (
+                                <canvas 
+                                    ref={canvasRef}
+                                    className="w-full h-full object-contain bg-white"
+                                />
+                            )}
+                        </div>
+
+                        {scanResult && scannerStatus === 'finished' && (
+                            <motion.div 
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="mt-6 p-6 bg-slate-50 rounded-2xl border border-slate-200"
+                            >
+                                <div className="flex justify-between items-center mb-4">
+                                    <h4 className="font-bold flex items-center gap-2">
+                                        <CheckCircle className="w-4 h-4 text-emerald-500" />
+                                        Detección de Respuestas
+                                    </h4>
+                                    <div className="flex gap-2">
+                                        <select 
+                                            value={scannerConfig.selectedStudentId}
+                                            onChange={(e) => setScannerConfig(prev => ({ ...prev, selectedStudentId: e.target.value }))}
+                                            className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-bold shadow-sm"
+                                        >
+                                            <option value="">Seleccionar Estudiante...</option>
+                                            {students.map(s => (
+                                                <option key={s.id} value={s.id}>{s.name || 'Sin nombre'}</option>
+                                            ))}
+                                        </select>
+                                        <button 
+                                            onClick={saveScanToStudent}
+                                            disabled={!scannerConfig.selectedStudentId}
+                                            className="bg-emerald-600 text-white px-4 py-1.5 rounded-lg text-xs font-black shadow-md hover:bg-emerald-700 disabled:opacity-50 transition-all"
+                                        >
+                                            SINCRONIZAR
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-6 md:grid-cols-10 gap-2">
+                                    {Object.entries(scanResult).map(([q, res]) => (
+                                        <div key={q} className={`flex flex-col items-center bg-white border p-1 rounded ${res === scannerConfig.answerKey[Number(q)] ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200'}`}>
+                                            <span className="text-[8px] text-slate-400 font-bold">{q}</span>
+                                            <span className="text-xs font-black">{res}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </motion.div>
+                        )}
+                    </section>
                 </div>
               </div>
             </motion.div>
