@@ -452,53 +452,112 @@ export default function App() {
         canvas.height = img.height;
         ctx.drawImage(img, 0, 0);
 
-        // Simple bubble detection logic
-        // In a production app, we would use corner detection markers to rectify
-        // Here we use a relative grid assuming the user aligned the sheet well
+        // 1. Threshold image to find black markers
+        const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        const data = imageData.data;
+        
+        // Find corner markers (looking for clusters of black pixels)
+        const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
+            let bestX = 0, bestY = 0, maxDarkness = 0;
+            const step = 4;
+            for (let y = startY; y < endY; y += step) {
+                for (let x = startX; x < endX; x += step) {
+                    const idx = (y * img.width + x) * 4;
+                    const brightness = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                    if (brightness < 60) {
+                        // Check local area density
+                        let localCount = 0;
+                        for (let dy = -5; dy <= 5; dy++) {
+                            for (let dx = -5; dx <= 5; dx++) {
+                                const lIdx = ((y+dy) * img.width + (x+dx)) * 4;
+                                if (lIdx >= 0 && lIdx < data.length) {
+                                    if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 60) localCount++;
+                                }
+                            }
+                        }
+                        if (localCount > maxDarkness) {
+                            maxDarkness = localCount;
+                            bestX = x;
+                            bestY = y;
+                        }
+                    }
+                }
+            }
+            return { x: bestX, y: bestY };
+        };
+
+        const q = 0.25; // Quarter size for search areas
+        const corners = {
+            tl: findCorner(0, 0, img.width * q, img.height * q),
+            tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
+            bl: findCorner(0, img.height * (1-q), img.width * q, img.height),
+            br: findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height)
+        };
+
+        // Draw detected corners for feedback
+        ctx.fillStyle = '#10b981'; // emerald-500
+        Object.values(corners).forEach(c => {
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, 10, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        // 2. Rectify and process bubbles
         const detectedAnswers: { [q: number]: string } = {};
         const options = ['A', 'B', 'C', 'D'];
         
-        // Grid parameters relative to aligned image
-        const gridStartX = img.width * 0.15;
-        const gridStartY = img.height * 0.15;
-        const colW = img.width * 0.22;
-        const rowH = img.height * 0.04;
-
         for (let i = 0; i < scannerConfig.questionCount; i++) {
             const col = Math.floor(i / 20);
             const row = i % 20;
-            const qX = gridStartX + (col * colW);
-            const qY = gridStartY + (row * rowH);
 
-            let darkValue = -1;
+            // Simple bilinear interpolation to find point within the 4 corners
+            const tx = (15 + (col * 22)) / 100; // Relative horizontal position
+            const ty = (18 + (row * 3.8)) / 100; // Relative vertical position
+
+            // Top edge interpolation
+            const topX = corners.tl.x + tx * (corners.tr.x - corners.tl.x);
+            const topY = corners.tl.y + tx * (corners.tr.y - corners.tl.y);
+            // Bottom edge interpolation
+            const bottomX = corners.bl.x + tx * (corners.br.x - corners.bl.x);
+            const bottomY = corners.bl.y + tx * (corners.br.y - corners.bl.y);
+            // Final point interpolation
+            const qX = topX + ty * (bottomX - topX);
+            const qY = topY + ty * (bottomY - topY);
+
+            let bestDarkness = -1;
             let detectedOpt = '-';
 
             options.forEach((opt, oIdx) => {
-                const bubbleX = qX + img.width * 0.04 + (oIdx * img.width * 0.035);
+                const bubbleX = qX + (4 + oIdx * 3.5) * (img.width / 100);
                 const bubbleY = qY;
                 
-                // Sample center of bubble
-                const imageData = ctx.getImageData(bubbleX - 2, bubbleY - 2, 4, 4);
-                let totalDarkness = 0;
-                for (let p = 0; p < imageData.data.length; p += 4) {
-                    const r = imageData.data[p];
-                    const g = imageData.data[p+1];
-                    const b = imageData.data[p+2];
-                    const brightness = (r + g + b) / 3;
-                    if (brightness < 100) totalDarkness++; // It's dark
+                // Sample area
+                const sampleSize = Math.max(2, Math.floor(img.width / 150));
+                let totalDark = 0;
+                for (let dy = -sampleSize; dy <= sampleSize; dy++) {
+                    for (let dx = -sampleSize; dx <= sampleSize; dx++) {
+                        const sIdx = (Math.floor(bubbleY + dy) * img.width + Math.floor(bubbleX + dx)) * 4;
+                        if (sIdx >= 0 && sIdx < data.length) {
+                            const b = (data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3;
+                            if (b < 100) totalDark++;
+                        }
+                    }
                 }
 
-                if (totalDarkness > darkValue) {
-                    darkValue = totalDarkness;
+                if (totalDark > bestDarkness) {
+                    bestDarkness = totalDark;
                     detectedOpt = opt;
                 }
 
-                // Draw debug hints
-                ctx.strokeStyle = totalDarkness > 5 ? 'red' : 'blue';
-                ctx.strokeRect(bubbleX - 2, bubbleY - 2, 4, 4);
+                // Visual feedback for bubble detection
+                ctx.beginPath();
+                ctx.arc(bubbleX, bubbleY, sampleSize + 2, 0, Math.PI * 2);
+                ctx.strokeStyle = totalDark > 5 ? '#3b82f6' : '#cbd5e1';
+                ctx.lineWidth = 2;
+                ctx.stroke();
             });
 
-            if (darkValue > 4) { // Confidence threshold
+            if (bestDarkness > 3) {
                 detectedAnswers[i + 1] = detectedOpt;
             }
         }
