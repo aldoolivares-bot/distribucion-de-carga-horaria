@@ -30,7 +30,12 @@ import {
   Library,
   Globe,
   Map,
-  Utensils
+  Utensils,
+  ClipboardCheck,
+  GraduationCap as GraduationIcon,
+  Trash2,
+  PlusCircle,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -80,9 +85,112 @@ const decimalToTime = (decimal: number): TimeDisplay => {
   };
 };
 
+interface StudentSimceData {
+  id: string;
+  name: string;
+  scores: {
+    [appIndex: number]: {
+      [catIndex: number]: number;
+    };
+  };
+}
+
+interface SimceCategory {
+  name: string;
+  questions: string;
+  total: number;
+}
+
+interface SimceAppConfig {
+  name: string;
+  categories: SimceCategory[];
+}
+
+const SIMCE_CONFIG: SimceAppConfig[] = [
+  {
+    name: '1° Aplicación',
+    categories: [
+      { name: 'Conocer', questions: '1-2-8-9-12-13-17-19-23-27-29', total: 11 },
+      { name: 'Comprender', questions: '3-4-5-16-20-21-22-28-30', total: 9 },
+      { name: 'Analizar', questions: '11-14-15', total: 3 },
+      { name: 'Aplicar', questions: '10-24-25', total: 3 },
+      { name: 'Inferir', questions: '6-7-18', total: 3 },
+      { name: 'Evaluar', questions: '26', total: 1 },
+    ]
+  },
+  {
+    name: '2° Aplicación',
+    categories: [
+      { name: 'Conocer', questions: '1-2-3-8-9-10-15-16-21-22-25-26-29', total: 13 },
+      { name: 'Comprender', questions: '4-5-6-7-11-17-18-19-20-28', total: 10 },
+      { name: 'Analizar', questions: '14-23-27', total: 3 },
+      { name: 'Aplicar', questions: '12-13-24-30', total: 4 },
+    ]
+  },
+  {
+    name: '3° Aplicación',
+    categories: [
+      { name: 'Conocer', questions: '1-2-5-7-8-10-11-12-14-15-16-17-19-23-24-26-27-34-35', total: 19 },
+      { name: 'Comprender', questions: '3-4-20-21-22-30-33', total: 7 },
+      { name: 'Analizar', questions: '13-28', total: 2 },
+      { name: 'Aplicar', questions: '9-25', total: 2 },
+      { name: 'Inferir', questions: '6-18-29-32', total: 4 },
+      { name: 'Evaluar', questions: '31', total: 1 },
+    ]
+  },
+  {
+    name: '4° Aplicación',
+    categories: [
+      { name: 'Conocer', questions: '', total: 0 },
+      { name: 'Comprender', questions: '', total: 0 },
+      { name: 'Analizar', questions: '', total: 0 },
+      { name: 'Aplicar', questions: '', total: 0 },
+      { name: 'Inferir', questions: '', total: 0 },
+      { name: 'Evaluar', questions: '', total: 0 },
+    ]
+  }
+];
+
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'jornada' | 'simce'>('jornada');
   const [contractHours, setContractHours] = useState<number>(44);
   const [teacherName, setTeacherName] = useState<string>('');
+
+  // SIMCE State
+  const [schoolInfo, setSchoolInfo] = useState({
+    establishment: 'ESCUELA LAURA ROBLES SILVA',
+    course: '8°B',
+    dates: ['', '', '', '']
+  });
+  const [students, setStudents] = useState<StudentSimceData[]>([
+    { id: '1', name: 'LURDES CAMILA AVALOS', scores: {} }
+  ]);
+
+  const addStudent = () => {
+    setStudents(prev => [...prev, { 
+      id: Math.random().toString(36).substr(2, 9), 
+      name: '', 
+      scores: {} 
+    }]);
+  };
+
+  const removeStudent = (id: string) => {
+    setStudents(prev => prev.filter(s => s.id !== id));
+  };
+
+  const updateStudentName = (id: string, name: string) => {
+    setStudents(prev => prev.map(s => s.id === id ? { ...s, name } : s));
+  };
+
+  const updateStudentScore = (studentId: string, appIdx: number, catIdx: number, score: number) => {
+    setStudents(prev => prev.map(s => {
+      if (s.id !== studentId) return s;
+      const newScores = { ...s.scores };
+      if (!newScores[appIdx]) newScores[appIdx] = {};
+      newScores[appIdx][catIdx] = score;
+      return { ...s, scores: newScores };
+    }));
+  };
 
   // Community Activities State
   const [activities, setActivities] = useState<CommunityActivity[]>([
@@ -296,11 +404,47 @@ export default function App() {
         </div>
       </header>
 
+      {/* Main Content Integration */}
+      <div className="bg-slate-100 border-b border-slate-200">
+        <div className="max-w-5xl mx-auto px-4 flex gap-4">
+          <button 
+            onClick={() => setActiveTab('jornada')}
+            className={`px-6 py-4 text-sm font-bold transition-all border-b-2 flex items-center gap-2 ${
+              activeTab === 'jornada' 
+                ? 'border-blue-600 text-blue-600 bg-white shadow-[0_-4px_0_0_inset_white]' 
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <Clock className="w-4 h-4" />
+            Jornada Docente
+          </button>
+          <button 
+            onClick={() => setActiveTab('simce')}
+            className={`px-6 py-4 text-sm font-bold transition-all border-b-2 flex items-center gap-2 ${
+              activeTab === 'simce' 
+                ? 'border-blue-600 text-blue-600 bg-white shadow-[0_-4px_0_0_inset_white]' 
+                : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <ClipboardCheck className="w-4 h-4" />
+            Análisis SIMCE
+          </button>
+        </div>
+      </div>
+
       <main className="max-w-5xl mx-auto px-4 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
-          {/* Left Column: Input & Controls */}
-          <div className="lg:col-span-5 space-y-6">
+        <AnimatePresence mode="wait">
+          {activeTab === 'jornada' ? (
+            <motion.div 
+              key="jornada"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="grid grid-cols-1 lg:grid-cols-12 gap-8"
+            >
+              {/* Existing Jornada content starts here */}
+              {/* Left Column: Input & Controls */}
+              <div className="lg:col-span-5 space-y-6">
             <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
                 <Clock className="w-5 h-5 text-blue-500" />
@@ -553,8 +697,165 @@ export default function App() {
                 </table>
               </div>
             </section>
-          </div>
-        </div>
+            </div>
+          </motion.div>
+        ) : (
+            <motion.div 
+              key="simce"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8"
+            >
+              {/* SIMCE Analysis Section */}
+              <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-8 pb-6 border-b border-slate-100">
+                  <div className="space-y-1">
+                    <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                      <FileSpreadsheet className="w-6 h-6 text-emerald-500" />
+                      Análisis Ensayos Tipo SIMCE
+                    </h2>
+                    <p className="text-sm text-slate-500 font-medium">Control de habilidades y progreso por estudiante</p>
+                  </div>
+                  <button 
+                    onClick={addStudent}
+                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm"
+                  >
+                    <PlusCircle className="w-4 h-4" />
+                    Añadir Estudiante
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Establecimiento</label>
+                    <input 
+                      type="text" 
+                      value={schoolInfo.establishment}
+                      onChange={(e) => setSchoolInfo(prev => ({ ...prev, establishment: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Curso</label>
+                    <input 
+                      type="text" 
+                      value={schoolInfo.course}
+                      onChange={(e) => setSchoolInfo(prev => ({ ...prev, course: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto -mx-8">
+                  <div className="min-w-[1200px] px-8">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50">
+                          <th rowSpan={2} className="p-4 border border-slate-200 text-xs font-bold text-slate-500 text-left w-64">Nombre del Estudiante</th>
+                          {SIMCE_CONFIG.map((app, appIdx) => (
+                            <th key={appIdx} colSpan={app.categories.length * 2} className="p-2 border border-slate-200 text-[10px] font-black uppercase text-center bg-slate-100 text-slate-600">
+                              {app.name}
+                            </th>
+                          ))}
+                          <th rowSpan={2} className="p-2 border border-slate-200"></th>
+                        </tr>
+                        <tr className="bg-slate-50">
+                          {SIMCE_CONFIG.map((app, appIdx) => (
+                            <React.Fragment key={appIdx}>
+                              {app.categories.map((cat, catIdx) => (
+                                <React.Fragment key={catIdx}>
+                                  <th className="p-2 border border-slate-200 text-[9px] font-bold text-slate-500 w-20 text-center leading-tight">
+                                    {cat.name}
+                                    <div className="text-[8px] opacity-60 font-normal">Total: {cat.total}</div>
+                                  </th>
+                                  <th className="p-2 border border-slate-200 text-[9px] font-bold text-emerald-600 w-16 text-center">%</th>
+                                </React.Fragment>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {students.map((student) => (
+                          <tr key={student.id} className="hover:bg-slate-50/50 transition-colors group">
+                            <td className="p-2 border border-slate-200">
+                              <input 
+                                type="text"
+                                placeholder="Ingresar nombre..."
+                                value={student.name}
+                                onChange={(e) => updateStudentName(student.id, e.target.value)}
+                                className="w-full bg-transparent border-none outline-none text-sm font-medium focus:text-blue-600"
+                              />
+                            </td>
+                            {SIMCE_CONFIG.map((app, appIdx) => (
+                              <React.Fragment key={appIdx}>
+                                {app.categories.map((cat, catIdx) => {
+                                  const score = student.scores[appIdx]?.[catIdx] || 0;
+                                  const percentage = cat.total > 0 ? (score / cat.total) * 100 : 0;
+                                  return (
+                                    <React.Fragment key={catIdx}>
+                                      <td className="p-2 border border-slate-200 text-center">
+                                        <input 
+                                          type="number"
+                                          min="0"
+                                          max={cat.total}
+                                          value={score || ''}
+                                          onChange={(e) => updateStudentScore(student.id, appIdx, catIdx, Number(e.target.value))}
+                                          className="w-12 bg-white border border-slate-100 rounded text-center text-sm font-bold focus:border-emerald-500 outline-none"
+                                          placeholder="0"
+                                        />
+                                      </td>
+                                      <td className={`p-2 border border-slate-200 text-center text-[10px] font-bold ${percentage >= 80 ? 'text-emerald-500' : percentage >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
+                                        {cat.total > 0 ? `${percentage.toFixed(1)}%` : '-'}
+                                      </td>
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </React.Fragment>
+                            ))}
+                            <td className="p-2 border border-slate-200 text-center">
+                              <button 
+                                onClick={() => removeStudent(student.id)}
+                                className="p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-red-50"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {students.length === 0 && (
+                          <tr>
+                            <td colSpan={100} className="p-12 text-center text-slate-400 font-medium italic">
+                              No hay estudiantes registrados. Haz clic en "Añadir Estudiante" para comenzar.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* Informative Footer for SIMCE */}
+              <div className="bg-blue-50 border border-blue-100 p-6 rounded-2xl flex gap-4">
+                <div className="bg-blue-600 p-2 h-fit rounded-lg shadow-sm">
+                  <Info className="w-5 h-5 text-white" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="font-bold text-blue-900 text-sm">Instrucciones del Analizador</h4>
+                  <p className="text-xs text-blue-700 leading-relaxed max-w-2xl">
+                    Ingresa solo el número de respuestas correctas en cada casilla. El sistema calculará el porcentaje basado en los requerimientos del ensayo: 
+                    <strong> Aplicación 1 (30 preguntas)</strong>, 
+                    <strong> Aplicación 2 (30 preguntas)</strong> y 
+                    <strong> Aplicación 3 (35 preguntas)</strong>. 
+                    Los colores indican el nivel de logro: <span className="text-emerald-600 font-bold">Verde (80%+)</span>, <span className="text-amber-600 font-bold">Ámbar (50-79%)</span>, <span className="text-red-600 font-bold">Rojo (&lt;50%)</span>.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* Footer */}
