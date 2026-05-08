@@ -43,7 +43,9 @@ import {
   XCircle,
   Scan,
   RefreshCcw,
-  Save
+  Save,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -174,6 +176,7 @@ export default function App() {
   });
   const [scanResult, setScanResult] = useState<{ [q: number]: string } | null>(null);
   const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'finished'>('idle');
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const [lastScanTime, setLastScanTime] = useState(0);
 
   // SIMCE State
@@ -1223,6 +1226,13 @@ export default function App() {
                             </h3>
                             <div className="flex gap-2">
                                 <button 
+                                    onClick={() => setIsFullScreen(true)}
+                                    className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+                                >
+                                    <Maximize2 className="w-4 h-4" />
+                                    Pantalla Completa
+                                </button>
+                                <button 
                                     onClick={() => setScannerStatus('idle')}
                                     className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
                                 >
@@ -1231,7 +1241,16 @@ export default function App() {
                             </div>
                         </div>
 
-                        <div className="relative aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800">
+                        <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-black' : 'aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
+                            {isFullScreen && (
+                                <button 
+                                    onClick={() => setIsFullScreen(false)}
+                                    className="absolute top-6 right-6 z-[60] bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-all"
+                                >
+                                    <Minimize2 className="w-6 h-6" />
+                                </button>
+                            )}
+
                             {scannerStatus !== 'finished' ? (
                                 <>
                                     <Webcam
@@ -1240,7 +1259,11 @@ export default function App() {
                                         screenshotFormat="image/jpeg"
                                         mirrored={false}
                                         className={`w-full h-full object-cover transition-opacity duration-500 ${scannerStatus === 'scanning' ? 'opacity-40' : 'opacity-80'}`}
-                                        videoConstraints={{ facingMode: "environment" }}
+                                        videoConstraints={{ 
+                                            facingMode: "environment",
+                                            width: { ideal: 1280 },
+                                            height: { ideal: 720 }
+                                        }}
                                     />
                                     
                                     <canvas 
@@ -1264,15 +1287,27 @@ export default function App() {
                                     ) : (
                                         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md text-white px-4 py-2 rounded-full text-[10px] font-bold tracking-widest flex items-center gap-2">
                                             <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                                            BUSCANDO MARCADORES...
+                                            MODO ESCÁNER ACTIVO
                                         </div>
                                     )}
                                 </>
                             ) : (
-                                <canvas 
-                                    ref={canvasRef}
-                                    className="w-full h-full object-contain bg-white"
-                                />
+                                <div className="w-full h-full relative">
+                                    <canvas 
+                                        ref={canvasRef}
+                                        className="w-full h-full object-contain bg-white"
+                                    />
+                                    {isFullScreen && (
+                                        <div className="absolute bottom-10 left-1/2 -translate-x-1/2">
+                                            <button 
+                                                onClick={() => setIsFullScreen(false)}
+                                                className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black shadow-2xl"
+                                            >
+                                                VER RESULTADOS
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
 
