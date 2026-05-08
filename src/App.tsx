@@ -476,19 +476,34 @@ export default function App() {
     
     const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
         let bestX = 0, bestY = 0, maxScore = 0;
-        const step = 8;
-        for (let y = startY; y < endY; y += step) {
-            for (let x = startX; x < endX; x += step) {
-                const idx = (y * img.width + x) * 4;
+        const step = 4; // Faster and more precise step
+        
+        // Dynamic thresholding: first pass to find average brightness in region
+        let totalBrightness = 0;
+        let samples = 0;
+        for (let y = startY; y < endY; y += 20) {
+            for (let x = startX; x < endX; x += 20) {
+                const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
+                totalBrightness += (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                samples++;
+            }
+        }
+        const avgRegionBrightness = totalBrightness / samples;
+        const localThreshold = avgRegionBrightness * 0.6; // Black should be 40% darker than average
+
+        for (let y = startY + 10; y < endY - 10; y += step) {
+            for (let x = startX + 10; x < endX - 10; x += step) {
+                const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
                 const brightness = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                if (brightness < 70) {
+                
+                if (brightness < localThreshold) {
                     let density = 0;
-                    const r = 6;
-                    for (let dy = -r; dy <= r; dy += 2) {
-                        for (let dx = -r; dx <= r; dx += 2) {
+                    const r = 8; // Larger radius for more stable detection
+                    for (let dy = -r; dy <= r; dy += 3) {
+                        for (let dx = -r; dx <= r; dx += 3) {
                             const lIdx = (Math.floor(y+dy) * img.width + Math.floor(x+dx)) * 4;
                             if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 70) density++;
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < localThreshold) density++;
                             }
                         }
                     }
@@ -503,7 +518,7 @@ export default function App() {
         return { x: bestX, y: bestY, score: maxScore };
     };
 
-    const q = 0.2;
+    const q = 0.3; // Search 30% of the screen corners instead of 20%
     const corners = {
         tl: findCorner(0, 0, img.width * q, img.height * q),
         tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
@@ -511,16 +526,19 @@ export default function App() {
         br: findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height)
     };
 
-    const hasAllCorners = Object.values(corners).every(c => c.score > 20);
+    const hasAllCorners = Object.values(corners).every(c => c.score > 15);
 
-    ctx.fillStyle = hasAllCorners ? '#10b981' : '#ef4444';
+    // Dynamic Feedback Color
+    ctx.fillStyle = hasAllCorners ? '#10b981' : '#f59e0b'; // Green if locked, Amber if hunting
     Object.values(corners).forEach(c => {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        if (c.score > 5) { // Only draw if we found SOMETHING
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, 15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
     });
 
     if (!hasAllCorners) return;
