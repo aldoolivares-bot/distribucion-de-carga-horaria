@@ -479,39 +479,46 @@ export default function App() {
     
     const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
         let bestX = 0, bestY = 0, maxScore = 0;
-        const step = 4; // Faster and more precise step
+        const step = 4;
         
-        // Dynamic thresholding: first pass to find average brightness in region
-        let totalBrightness = 0;
-        let samples = 0;
-        for (let y = startY; y < endY; y += 20) {
-            for (let x = startX; x < endX; x += 20) {
+        for (let y = startY + 20; y < endY - 20; y += step) {
+            for (let x = startX + 20; x < endX - 20; x += step) {
                 const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
-                totalBrightness += (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                samples++;
-            }
-        }
-        const avgRegionBrightness = totalBrightness / samples;
-        const localThreshold = avgRegionBrightness * 0.6; // Black should be 40% darker than average
-
-        for (let y = startY + 10; y < endY - 10; y += step) {
-            for (let x = startX + 10; x < endX - 10; x += step) {
-                const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
-                const brightness = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                const b = (data[idx] + data[idx+1] + data[idx+2]) / 3;
                 
-                if (brightness < localThreshold) {
-                    let density = 0;
-                    const r = 8; // Larger radius for more stable detection
-                    for (let dy = -r; dy <= r; dy += 3) {
-                        for (let dx = -r; dx <= r; dx += 3) {
+                // Only consider very dark spots
+                if (b < 80) {
+                    let markerDensity = 0;
+                    let whiteSurround = 0;
+                    const r = 8;  // Core radius
+                    const r2 = 16; // Outer ring radius
+
+                    // Check core (should be dark)
+                    for (let dy = -r; dy <= r; dy += 4) {
+                        for (let dx = -r; dx <= r; dx += 4) {
                             const lIdx = (Math.floor(y+dy) * img.width + Math.floor(x+dx)) * 4;
                             if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < localThreshold) density++;
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 100) markerDensity++;
                             }
                         }
                     }
-                    if (density > maxScore) {
-                        maxScore = density;
+
+                    // Check outer ring (should be white/bright - the paper)
+                    if (markerDensity > 15) {
+                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                            const rx = Math.floor(x + Math.cos(angle) * r2);
+                            const ry = Math.floor(y + Math.sin(angle) * r2);
+                            const lIdx = (ry * img.width + rx) * 4;
+                            if (lIdx >= 0 && lIdx < data.length) {
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 > 160) whiteSurround++;
+                            }
+                        }
+                    }
+                    
+                    // Score is based on having both a dark center and a white surrounding
+                    const currentScore = markerDensity + (whiteSurround * 5);
+                    if (whiteSurround >= 5 && currentScore > maxScore) {
+                        maxScore = currentScore;
                         bestX = x;
                         bestY = y;
                     }
@@ -521,7 +528,7 @@ export default function App() {
         return { x: bestX, y: bestY, score: maxScore };
     };
 
-    const q = 0.3; // Search 30% of the screen corners instead of 20%
+    const q = 0.45; // Broad search for mobile
     const corners = {
         tl: findCorner(0, 0, img.width * q, img.height * q),
         tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
@@ -1258,11 +1265,11 @@ export default function App() {
                                         ref={webcamRef}
                                         screenshotFormat="image/jpeg"
                                         mirrored={false}
-                                        className={`w-full h-full object-cover transition-opacity duration-500 ${scannerStatus === 'scanning' ? 'opacity-40' : 'opacity-80'}`}
+                                        className={`w-full h-full object-cover transition-opacity duration-500 ${scannerStatus === 'scanning' ? 'opacity-50' : 'opacity-80'}`}
                                         videoConstraints={{ 
                                             facingMode: "environment",
-                                            width: { ideal: 1280 },
-                                            height: { ideal: 720 }
+                                            width: { ideal: 1920 },
+                                            height: { ideal: 1080 }
                                         }}
                                     />
                                     
@@ -1273,22 +1280,33 @@ export default function App() {
 
                                     {scannerStatus === 'idle' ? (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
-                                            <div className="w-64 h-80 border-2 border-dashed border-white/40 rounded-xl mb-6 flex items-center justify-center">
-                                                <Scan className="w-12 h-12 text-white/20" />
+                                            <div className="w-64 h-96 border-4 border-dashed border-white/30 rounded-3xl mb-6 flex items-center justify-center bg-black/10">
+                                                <Scan className="w-16 h-16 text-white/10" />
                                             </div>
                                             <button 
                                                 onClick={() => setScannerStatus('scanning')}
-                                                className="flex items-center gap-3 bg-blue-600 text-white px-8 py-4 rounded-2xl text-lg font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                                                className="flex items-center gap-3 bg-blue-600 text-white px-10 py-5 rounded-3xl text-xl font-black shadow-2xl hover:scale-105 active:scale-95 transition-all"
                                             >
-                                                <Camera className="w-6 h-6" />
-                                                INICIAR ESCÁNER
+                                                <Camera className="w-7 h-7" />
+                                                INICIAR CÁMARA
                                             </button>
                                         </div>
                                     ) : (
-                                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md text-white px-4 py-2 rounded-full text-[10px] font-bold tracking-widest flex items-center gap-2">
-                                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                                            MODO ESCÁNER ACTIVO
-                                        </div>
+                                        <>
+                                            <div className="absolute inset-0 border-[60px] border-black/40 pointer-events-none shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]">
+                                                <div className="w-full h-full border-2 border-white/20 rounded-lg relative">
+                                                    {/* Corner focus brackets */}
+                                                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500" />
+                                                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500" />
+                                                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500" />
+                                                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500" />
+                                                </div>
+                                            </div>
+                                            <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-blue-600/90 backdrop-blur-md text-white px-6 py-2 rounded-full text-xs font-black tracking-widest flex items-center gap-2 shadow-xl">
+                                                <div className="w-2 h-2 bg-white rounded-full animate-ping" />
+                                                BUSCANDO MARCADORES
+                                            </div>
+                                        </>
                                     )}
                                 </>
                             ) : (
