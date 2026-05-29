@@ -191,6 +191,7 @@ export default function App() {
     br: { x: 80, y: 80 }
   });
   const [activeDragCorner, setActiveDragCorner] = useState<'tl' | 'tr' | 'bl' | 'br' | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // SIMCE State
   const [schoolInfo, setSchoolInfo] = useState({
@@ -482,8 +483,8 @@ export default function App() {
     const imageSrc = webcamRef.current.getScreenshot();
     if (!imageSrc) return;
 
+    setIsAnalyzing(true);
     setCapturedImage(imageSrc);
-    setScannerStatus('correcting');
 
     // Run custom corner finder on captured image to pre-align the handles
     const img = new Image();
@@ -494,56 +495,165 @@ export default function App() {
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
+    if (!ctx) {
+      setIsAnalyzing(false);
+      setScannerStatus('correcting');
+      return;
+    }
     ctx.drawImage(img, 0, 0);
 
     const imageData = ctx.getImageData(0, 0, img.width, img.height);
     const data = imageData.data;
     
     const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
-        let bestX = 0, bestY = 0, maxScore = 0;
-        const step = 4;
+        let bestX = 0, bestY = 0, maxScore = -999999;
+        const width = endX - startX;
         
-        for (let y = startY + 20; y < endY - 20; y += step) {
-            for (let x = startX + 20; x < endX - 20; x += step) {
+        // Coarse scan step (e.g. every 5 pixels) for high speed
+        const step = Math.max(3, Math.floor(width / 150));
+        
+        // Adaptive sampling offsets scaled to image resolution
+        const R1 = Math.max(10, Math.floor(img.width * 0.012));
+        const R2 = Math.max(18, Math.floor(img.width * 0.022));
+        const R_inner = Math.max(4, Math.floor(img.width * 0.006));
+
+        for (let y = startY + R2 + 5; y < endY - R2 - 5; y += step) {
+            for (let x = startX + R2 + 5; x < endX - R2 - 5; x += step) {
                 const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
-                const b = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
                 
-                if (b < 100) {
-                    let markerDensity = 0;
-                    let whiteSurround = 0;
-                    const r = 8;
-                    const r2 = 16;
-
-                    for (let dy = -r; dy <= r; dy += 4) {
-                        for (let dx = -r; dx <= r; dx += 4) {
-                            const lIdx = (Math.floor(y+dy) * img.width + Math.floor(x+dx)) * 4;
-                            if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 110) markerDensity++;
+                // Inspect potentially dark centers
+                if (bCenter < 140) {
+                    // Quick check if center is a local minimum
+                    let isLocalMin = true;
+                    for (let dy = -2; dy <= 2; dy += 2) {
+                        for (let dx = -2; dx <= 2; dx += 2) {
+                            const nidx = (Math.floor(y + dy) * img.width + Math.floor(x + dx)) * 4;
+                            if (nidx >= 0 && nidx < data.length) {
+                                const nb = (data[nidx] + data[nidx+1] + data[nidx+2]) / 3;
+                                if (nb < bCenter) {
+                                    isLocalMin = false;
+                                    break;
+                                }
                             }
                         }
-                    }
-
-                    if (markerDensity > 15) {
-                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-                            const rx = Math.floor(x + Math.cos(angle) * r2);
-                            const ry = Math.floor(y + Math.sin(angle) * r2);
-                            const lIdx = (ry * img.width + rx) * 4;
-                            if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 > 150) whiteSurround++;
-                            }
-                        }
+                        if (!isLocalMin) break;
                     }
                     
-                    const score = markerDensity + (whiteSurround * 5);
-                    if (whiteSurround >= 4 && score > maxScore) {
-                        maxScore = score;
-                        bestX = x;
-                        bestY = y;
+                    if (!isLocalMin) continue;
+
+                    let surroundSum1 = 0;
+                    let count1 = 0;
+                    let surroundSum2 = 0;
+                    let count2 = 0;
+
+                    // Sample 8 points on outer circle R1 (paper region)
+                    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                        const sx = Math.floor(x + Math.cos(angle) * R1);
+                        const sy = Math.floor(y + Math.sin(angle) * R1);
+                        const sidx = (sy * img.width + sx) * 4;
+                        if (sidx >= 0 && sidx < data.length) {
+                            surroundSum1 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                            count1++;
+                        }
+                    }
+
+                    // Sample 8 points on outer circle R2 (paper region)
+                    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                        const sx = Math.floor(x + Math.cos(angle) * R2);
+                        const sy = Math.floor(y + Math.sin(angle) * R2);
+                        const sidx = (sy * img.width + sx) * 4;
+                        if (sidx >= 0 && sidx < data.length) {
+                            surroundSum2 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                            count2++;
+                        }
+                    }
+
+                    if (count1 > 0 && count2 > 0) {
+                        const avgS1 = surroundSum1 / count1;
+                        const avgS2 = surroundSum2 / count2;
+                        
+                        // Circular dark center on bright background means:
+                        // High surroundings brightness - low center brightness
+                        const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
+                        
+                        // Verify core structure (the black solid marker width)
+                        let innerDarkCount = 0;
+                        let innerPoints = 0;
+                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 2) {
+                            const sx = Math.floor(x + Math.cos(angle) * R_inner);
+                            const sy = Math.floor(y + Math.sin(angle) * R_inner);
+                            const sidx = (sy * img.width + sx) * 4;
+                            if (sidx >= 0 && sidx < data.length) {
+                                const bS = (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                                if (bS < bCenter + 35) {
+                                    innerDarkCount++;
+                                }
+                                innerPoints++;
+                            }
+                        }
+                        
+                        if (innerPoints > 0 && innerDarkCount >= 3) {
+                            if (score > maxScore) {
+                                maxScore = score;
+                                bestX = x;
+                                bestY = y;
+                            }
+                        }
                     }
                 }
             }
         }
+
+        // Refine with 1-pixel precision in a local 16x16 window
+        if (maxScore > -50 && bestX > 0 && bestY > 0) {
+            let refX = bestX, refY = bestY, refMaxScore = maxScore;
+            for (let dy = -8; dy <= 8; dy++) {
+                for (let dx = -8; dx <= 8; dx++) {
+                    const rx = bestX + dx;
+                    const ry = bestY + dy;
+                    if (rx >= startX + 5 && rx < endX - 5 && ry >= startY + 5 && ry < endY - 5) {
+                        const idx = (ry * img.width + rx) * 4;
+                        const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                        
+                        let surroundSum1 = 0, count1 = 0;
+                        let surroundSum2 = 0, count2 = 0;
+                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                            const sx1 = rx + Math.floor(Math.cos(angle) * R1);
+                            const sy1 = ry + Math.floor(Math.sin(angle) * R1);
+                            const sidx1 = (sy1 * img.width + sx1) * 4;
+                            if (sidx1 >= 0 && sidx1 < data.length) {
+                                surroundSum1 += (data[sidx1] + data[sidx1+1] + data[sidx1+2]) / 3;
+                                count1++;
+                            }
+                            
+                            const sx2 = rx + Math.floor(Math.cos(angle) * R2);
+                            const sy2 = ry + Math.floor(Math.sin(angle) * R2);
+                            const sidx2 = (sy2 * img.width + sx2) * 4;
+                            if (sidx2 >= 0 && sidx2 < data.length) {
+                                surroundSum2 += (data[sidx2] + data[sidx2+1] + data[sidx2+2]) / 3;
+                                count2++;
+                            }
+                        }
+                        
+                        if (count1 > 0 && count2 > 0) {
+                            const avgS1 = surroundSum1 / count1;
+                            const avgS2 = surroundSum2 / count2;
+                            const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
+                            if (score > refMaxScore) {
+                                refMaxScore = score;
+                                refX = rx;
+                                refY = ry;
+                            }
+                        }
+                    }
+                }
+            }
+            bestX = refX;
+            bestY = refY;
+            maxScore = refMaxScore;
+        }
+
         return { x: bestX, y: bestY, score: maxScore };
     };
 
@@ -553,19 +663,37 @@ export default function App() {
     const bl = findCorner(0, img.height * (1-q), img.width * q, img.height);
     const br = findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height);
 
-    setCorners({
-      tl: tl.score > 12 ? { x: (tl.x / img.width) * 100, y: (tl.y / img.height) * 100 } : { x: 20, y: 20 },
-      tr: tr.score > 12 ? { x: (tr.x / img.width) * 100, y: (tr.y / img.height) * 100 } : { x: 80, y: 20 },
-      bl: bl.score > 12 ? { x: (bl.x / img.width) * 100, y: (bl.y / img.height) * 100 } : { x: 20, y: 80 },
-      br: br.score > 12 ? { x: (br.x / img.width) * 100, y: (br.y / img.height) * 100 } : { x: 80, y: 80 }
-    });
+    const CONFIDENCE_THRESHOLD = 30;
+    const hasAllCorners = tl.score >= CONFIDENCE_THRESHOLD && 
+                         tr.score >= CONFIDENCE_THRESHOLD && 
+                         bl.score >= CONFIDENCE_THRESHOLD && 
+                         br.score >= CONFIDENCE_THRESHOLD;
+
+    const detectedCorners = {
+      tl: tl.score >= CONFIDENCE_THRESHOLD ? { x: (tl.x / img.width) * 100, y: (tl.y / img.height) * 100 } : { x: 20, y: 20 },
+      tr: tr.score >= CONFIDENCE_THRESHOLD ? { x: (tr.x / img.width) * 100, y: (tr.y / img.height) * 100 } : { x: 80, y: 20 },
+      bl: bl.score >= CONFIDENCE_THRESHOLD ? { x: (bl.x / img.width) * 100, y: (bl.y / img.height) * 100 } : { x: 20, y: 80 },
+      br: br.score >= CONFIDENCE_THRESHOLD ? { x: (br.x / img.width) * 100, y: (br.y / img.height) * 100 } : { x: 80, y: 80 }
+    };
+
+    setCorners(detectedCorners);
+
+    if (hasAllCorners) {
+      // Auto-detected perfectly! Analyze answers straight away.
+      await processCapturedScan(imageSrc, detectedCorners);
+    } else {
+      // Show manual review/correcting screen for alignment
+      setScannerStatus('correcting');
+    }
+    setIsAnalyzing(false);
   };
 
-  const processCapturedScan = async () => {
-    if (!capturedImage) return;
+  const processCapturedScan = async (overrideImage?: string, overrideCorners?: typeof corners) => {
+    const imageToUse = overrideImage || capturedImage;
+    if (!imageToUse) return;
 
     const img = new Image();
-    img.src = capturedImage;
+    img.src = imageToUse;
     await new Promise(resolve => img.onload = resolve);
 
     // Create an off-screen temporary canvas for image processing
@@ -580,11 +708,13 @@ export default function App() {
     const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
     const data = imageData.data;
 
+    const cornersToUse = overrideCorners || corners;
+
     const absoluteCorners = {
-        tl: { x: (corners.tl.x / 100) * img.width, y: (corners.tl.y / 100) * img.height },
-        tr: { x: (corners.tr.x / 100) * img.width, y: (corners.tr.y / 100) * img.height },
-        bl: { x: (corners.bl.x / 100) * img.width, y: (corners.bl.y / 100) * img.height },
-        br: { x: (corners.br.x / 100) * img.width, y: (corners.br.y / 100) * img.height }
+        tl: { x: (cornersToUse.tl.x / 100) * img.width, y: (cornersToUse.tl.y / 100) * img.height },
+        tr: { x: (cornersToUse.tr.x / 100) * img.width, y: (cornersToUse.tr.y / 100) * img.height },
+        bl: { x: (cornersToUse.bl.x / 100) * img.width, y: (cornersToUse.bl.y / 100) * img.height },
+        br: { x: (cornersToUse.br.x / 100) * img.width, y: (cornersToUse.br.y / 100) * img.height }
     };
 
     const detectedAnswers: { [q: number]: string } = {};
@@ -1301,6 +1431,19 @@ export default function App() {
                         </div>
 
                         <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'aspect-[3/4] md:aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
+                            {isAnalyzing && (
+                                <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-6 text-center">
+                                    <div className="relative flex items-center justify-center mb-6">
+                                        <div className="w-20 h-20 rounded-full border-4 border-blue-500/20 border-t-emerald-500 animate-spin" />
+                                        <Scan className="w-8 h-8 text-emerald-400 absolute animate-pulse" />
+                                    </div>
+                                    <h4 className="text-lg font-bold text-white mb-2">Procesando Hoja de Respuestas</h4>
+                                    <p className="text-xs text-slate-300 max-w-xs">
+                                        Detectando marcadores y analizando respuestas automáticamente...
+                                    </p>
+                                </div>
+                            )}
+
                             {isFullScreen && (
                                 <button 
                                     onClick={() => setIsFullScreen(false)}
