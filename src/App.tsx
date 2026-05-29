@@ -175,9 +175,22 @@ export default function App() {
     selectedStudentId: ''
   });
   const [scanResult, setScanResult] = useState<{ [q: number]: string } | null>(null);
-  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'finished'>('idle');
+  const [scannerStatus, setScannerStatus] = useState<'idle' | 'scanning' | 'correcting' | 'finished'>('idle');
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [lastScanTime, setLastScanTime] = useState(0);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [corners, setCorners] = useState<{
+    tl: { x: number; y: number };
+    tr: { x: number; y: number };
+    bl: { x: number; y: number };
+    br: { x: number; y: number };
+  }>({
+    tl: { x: 20, y: 20 },
+    tr: { x: 80, y: 20 },
+    bl: { x: 20, y: 80 },
+    br: { x: 80, y: 80 }
+  });
+  const [activeDragCorner, setActiveDragCorner] = useState<'tl' | 'tr' | 'bl' | 'br' | null>(null);
 
   // SIMCE State
   const [schoolInfo, setSchoolInfo] = useState({
@@ -191,24 +204,33 @@ export default function App() {
 
   const webcamRef = React.useRef<Webcam>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
-  // Real-time processing loop
-  React.useEffect(() => {
-    let animationId: number;
+  const handleDragMove = (clientX: number, clientY: number) => {
+    if (!activeDragCorner || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
     
-    const loop = async () => {
-      if (scannerStatus === 'scanning' && webcamRef.current) {
-        await processScan(true); 
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    
+    setCorners(prev => ({
+      ...prev,
+      [activeDragCorner]: {
+        x: Math.max(0, Math.min(100, x)),
+        y: Math.max(0, Math.min(100, y))
       }
-      animationId = requestAnimationFrame(loop);
-    };
+    }));
+  };
 
-    if (scannerStatus === 'scanning') {
-      animationId = requestAnimationFrame(loop);
+  const handleMouseMove = (e: React.MouseEvent) => {
+    handleDragMove(e.clientX, e.clientY);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches && e.touches.length > 0) {
+      handleDragMove(e.touches[0].clientX, e.touches[0].clientY);
     }
-
-    return () => cancelAnimationFrame(animationId);
-  }, [scannerStatus]);
+  };
 
   const addStudent = () => {
     setStudents(prev => [...prev, { 
@@ -455,23 +477,24 @@ export default function App() {
     doc.save('Hoja_Respuestas_SIMCE.pdf');
   };
 
-  const processScan = async (silent: boolean = false) => {
+  const capturePhoto = async () => {
     if (!webcamRef.current) return;
-    
     const imageSrc = webcamRef.current.getScreenshot();
     if (!imageSrc) return;
 
+    setCapturedImage(imageSrc);
+    setScannerStatus('correcting');
+
+    // Run custom corner finder on captured image to pre-align the handles
     const img = new Image();
     img.src = imageSrc;
     await new Promise(resolve => img.onload = resolve);
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-
+    const canvas = document.createElement('canvas');
     canvas.width = img.width;
     canvas.height = img.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
     ctx.drawImage(img, 0, 0);
 
     const imageData = ctx.getImageData(0, 0, img.width, img.height);
@@ -486,39 +509,35 @@ export default function App() {
                 const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
                 const b = (data[idx] + data[idx+1] + data[idx+2]) / 3;
                 
-                // Only consider very dark spots
-                if (b < 80) {
+                if (b < 100) {
                     let markerDensity = 0;
                     let whiteSurround = 0;
-                    const r = 8;  // Core radius
-                    const r2 = 16; // Outer ring radius
+                    const r = 8;
+                    const r2 = 16;
 
-                    // Check core (should be dark)
                     for (let dy = -r; dy <= r; dy += 4) {
                         for (let dx = -r; dx <= r; dx += 4) {
                             const lIdx = (Math.floor(y+dy) * img.width + Math.floor(x+dx)) * 4;
                             if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 100) markerDensity++;
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 < 110) markerDensity++;
                             }
                         }
                     }
 
-                    // Check outer ring (should be white/bright - the paper)
                     if (markerDensity > 15) {
                         for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
                             const rx = Math.floor(x + Math.cos(angle) * r2);
                             const ry = Math.floor(y + Math.sin(angle) * r2);
                             const lIdx = (ry * img.width + rx) * 4;
                             if (lIdx >= 0 && lIdx < data.length) {
-                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 > 160) whiteSurround++;
+                                if ((data[lIdx] + data[lIdx+1] + data[lIdx+2]) / 3 > 150) whiteSurround++;
                             }
                         }
                     }
                     
-                    // Score is based on having both a dark center and a white surrounding
-                    const currentScore = markerDensity + (whiteSurround * 5);
-                    if (whiteSurround >= 5 && currentScore > maxScore) {
-                        maxScore = currentScore;
+                    const score = markerDensity + (whiteSurround * 5);
+                    if (whiteSurround >= 4 && score > maxScore) {
+                        maxScore = score;
                         bestX = x;
                         bestY = y;
                     }
@@ -528,35 +547,60 @@ export default function App() {
         return { x: bestX, y: bestY, score: maxScore };
     };
 
-    const q = 0.45; // Broad search for mobile
-    const corners = {
-        tl: findCorner(0, 0, img.width * q, img.height * q),
-        tr: findCorner(img.width * (1-q), 0, img.width, img.height * q),
-        bl: findCorner(0, img.height * (1-q), img.width * q, img.height),
-        br: findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height)
-    };
+    const q = 0.45;
+    const tl = findCorner(0, 0, img.width * q, img.height * q);
+    const tr = findCorner(img.width * (1-q), 0, img.width, img.height * q);
+    const bl = findCorner(0, img.height * (1-q), img.width * q, img.height);
+    const br = findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height);
 
-    const hasAllCorners = Object.values(corners).every(c => c.score > 15);
-
-    // Dynamic Feedback Color
-    ctx.fillStyle = hasAllCorners ? '#10b981' : '#f59e0b'; // Green if locked, Amber if hunting
-    Object.values(corners).forEach(c => {
-        if (c.score > 5) { // Only draw if we found SOMETHING
-            ctx.beginPath();
-            ctx.arc(c.x, c.y, 15, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 3;
-            ctx.stroke();
-        }
+    setCorners({
+      tl: tl.score > 12 ? { x: (tl.x / img.width) * 100, y: (tl.y / img.height) * 100 } : { x: 20, y: 20 },
+      tr: tr.score > 12 ? { x: (tr.x / img.width) * 100, y: (tr.y / img.height) * 100 } : { x: 80, y: 20 },
+      bl: bl.score > 12 ? { x: (bl.x / img.width) * 100, y: (bl.y / img.height) * 100 } : { x: 20, y: 80 },
+      br: br.score > 12 ? { x: (br.x / img.width) * 100, y: (br.y / img.height) * 100 } : { x: 80, y: 80 }
     });
+  };
 
-    if (!hasAllCorners) return;
+  const processCapturedScan = async () => {
+    if (!capturedImage) return;
+
+    const img = new Image();
+    img.src = capturedImage;
+    await new Promise(resolve => img.onload = resolve);
+
+    // Create an off-screen temporary canvas for image processing
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = img.width;
+    tempCanvas.height = img.height;
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    if (!tempCtx) return;
+
+    tempCtx.drawImage(img, 0, 0);
+
+    const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
+    const data = imageData.data;
+
+    const absoluteCorners = {
+        tl: { x: (corners.tl.x / 100) * img.width, y: (corners.tl.y / 100) * img.height },
+        tr: { x: (corners.tr.x / 100) * img.width, y: (corners.tr.y / 100) * img.height },
+        bl: { x: (corners.bl.x / 100) * img.width, y: (corners.bl.y / 100) * img.height },
+        br: { x: (corners.br.x / 100) * img.width, y: (corners.br.y / 100) * img.height }
+    };
 
     const detectedAnswers: { [q: number]: string } = {};
     const options = ['A', 'B', 'C', 'D'];
-    let confidenceSum = 0;
     
+    // Draw visual corners on the output canvas
+    tempCtx.fillStyle = '#10b981';
+    Object.values(absoluteCorners).forEach(c => {
+        tempCtx.beginPath();
+        tempCtx.arc(c.x, c.y, 15, 0, Math.PI * 2);
+        tempCtx.fill();
+        tempCtx.strokeStyle = 'white';
+        tempCtx.lineWidth = 3;
+        tempCtx.stroke();
+    });
+
     for (let i = 0; i < scannerConfig.questionCount; i++) {
         const col = Math.floor(i / 20);
         const row = i % 20;
@@ -564,10 +608,10 @@ export default function App() {
         const tx = (16 + (col * 22)) / 100;
         const ty = (19 + (row * 3.8)) / 100;
 
-        const topX = corners.tl.x + tx * (corners.tr.x - corners.tl.x);
-        const topY = corners.tl.y + tx * (corners.tr.y - corners.tl.y);
-        const bottomX = corners.bl.x + tx * (corners.br.x - corners.bl.x);
-        const bottomY = corners.bl.y + tx * (corners.br.y - corners.bl.y);
+        const topX = absoluteCorners.tl.x + tx * (absoluteCorners.tr.x - absoluteCorners.tl.x);
+        const topY = absoluteCorners.tl.y + tx * (absoluteCorners.tr.y - absoluteCorners.tl.y);
+        const bottomX = absoluteCorners.bl.x + tx * (absoluteCorners.br.x - absoluteCorners.bl.x);
+        const bottomY = absoluteCorners.bl.y + tx * (absoluteCorners.br.y - absoluteCorners.bl.y);
         const qX = topX + ty * (bottomX - topX);
         const qY = topY + ty * (bottomY - topY);
 
@@ -594,24 +638,32 @@ export default function App() {
                 detectedOpt = opt;
             }
 
-            ctx.beginPath();
-            ctx.arc(bubbleX, bubbleY, sampleSize, 0, Math.PI * 2);
-            ctx.strokeStyle = totalDark > 8 ? '#3b82f6' : '#cbd5e1';
-            ctx.stroke();
+            tempCtx.beginPath();
+            tempCtx.arc(bubbleX, bubbleY, sampleSize, 0, Math.PI * 2);
+            tempCtx.strokeStyle = totalDark > 8 ? '#3b82f6' : '#cbd5e1';
+            tempCtx.stroke();
         });
 
         if (bestDarkness > 6) {
             detectedAnswers[i + 1] = detectedOpt;
-            confidenceSum++;
         }
     }
 
-    if (!silent || (confidenceSum > scannerConfig.questionCount * 0.8)) {
-        setScanResult(detectedAnswers);
-        if (confidenceSum > scannerConfig.questionCount * 0.8) {
-            setScannerStatus('finished');
+    setScanResult(detectedAnswers);
+    setScannerStatus('finished');
+
+    // Wait for the next tick so the DOM canvas element actually mounts
+    setTimeout(() => {
+        const domCanvas = canvasRef.current;
+        if (domCanvas) {
+            domCanvas.width = img.width;
+            domCanvas.height = img.height;
+            const domCtx = domCanvas.getContext('2d');
+            if (domCtx) {
+                domCtx.drawImage(tempCanvas, 0, 0);
+            }
         }
-    }
+    }, 100);
   };
 
   const saveScanToStudent = () => {
@@ -1248,7 +1300,7 @@ export default function App() {
                             </div>
                         </div>
 
-                        <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-black' : 'aspect-[4/3] bg-slate-900 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
+                        <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'aspect-[3/4] md:aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
                             {isFullScreen && (
                                 <button 
                                     onClick={() => setIsFullScreen(false)}
@@ -1259,29 +1311,12 @@ export default function App() {
                             )}
 
                             {scannerStatus !== 'finished' ? (
-                                <>
-                                    <Webcam
-                                        audio={false}
-                                        ref={webcamRef}
-                                        screenshotFormat="image/jpeg"
-                                        mirrored={false}
-                                        className={`w-full h-full object-cover transition-opacity duration-500 ${scannerStatus === 'scanning' ? 'opacity-50' : 'opacity-80'}`}
-                                        videoConstraints={{ 
-                                            facingMode: "environment",
-                                            width: { ideal: 1920 },
-                                            height: { ideal: 1080 }
-                                        }}
-                                    />
-                                    
-                                    <canvas 
-                                        ref={canvasRef}
-                                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                                    />
-
-                                    {scannerStatus === 'idle' ? (
-                                        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
-                                            <div className="w-64 h-96 border-4 border-dashed border-white/30 rounded-3xl mb-6 flex items-center justify-center bg-black/10">
-                                                <Scan className="w-16 h-16 text-white/10" />
+                                <div className="relative w-full h-full flex flex-col justify-between overflow-hidden">
+                                    {/* STATE 1: IDLE */}
+                                    {scannerStatus === 'idle' && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-900">
+                                            <div className="w-56 h-72 border-4 border-dashed border-white/20 rounded-3xl mb-6 flex items-center justify-center bg-black/20">
+                                                <Scan className="w-16 h-16 text-white/20 animate-pulse" />
                                             </div>
                                             <button 
                                                 onClick={() => setScannerStatus('scanning')}
@@ -1291,24 +1326,154 @@ export default function App() {
                                                 INICIAR CÁMARA
                                             </button>
                                         </div>
-                                    ) : (
-                                        <>
-                                            <div className="absolute inset-0 border-[60px] border-black/40 pointer-events-none shadow-[inset_0_0_100px_rgba(0,0,0,0.5)]">
-                                                <div className="w-full h-full border-2 border-white/20 rounded-lg relative">
-                                                    {/* Corner focus brackets */}
-                                                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500" />
-                                                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500" />
-                                                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500" />
-                                                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500" />
+                                    )}
+
+                                    {/* STATE 2: SCANNING / LIVE PREVIEW */}
+                                    {scannerStatus === 'scanning' && (
+                                        <div className="relative w-full h-full flex flex-col justify-between">
+                                            {/* @ts-ignore */}
+                                            <Webcam
+                                                audio={false}
+                                                ref={webcamRef}
+                                                screenshotFormat="image/jpeg"
+                                                mirrored={false}
+                                                className="w-full h-full object-contain bg-slate-950"
+                                                videoConstraints={{ 
+                                                    facingMode: "environment",
+                                                    width: { ideal: 1920 },
+                                                    height: { ideal: 1080 }
+                                                }}
+                                            />
+
+                                            {/* Beautiful QR-like center frame guide */}
+                                            <div className="absolute inset-0 flex flex-col justify-between p-6 pointer-events-none">
+                                                {/* Top Instructions overlay */}
+                                                <div className="self-center bg-black/60 backdrop-blur-md text-white border border-white/10 px-4 py-2 rounded-full text-[11px] font-bold tracking-wider uppercase mb-2 flex items-center gap-2">
+                                                    <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
+                                                    Modo Captura Activo
+                                                </div>
+
+                                                {/* Central frame guide */}
+                                                <div className="w-60 h-72 border-2 border-white/20 rounded-2xl mx-auto self-center flex items-center justify-center relative">
+                                                    {/* Corner brackets */}
+                                                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-xl" />
+                                                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-xl" />
+                                                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-xl" />
+                                                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-xl" />
+                                                    <div className="text-white/40 text-[10px] font-bold text-center p-4">
+                                                        Alinea los 4 marcadores de la hoja dentro de este recuadro y presiona Capturar
+                                                    </div>
+                                                </div>
+
+                                                {/* Space filler, pushes shutter down */}
+                                                <div className="h-20" />
+                                            </div>
+
+                                            {/* Shutter button wrapper */}
+                                            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-2 pointer-events-auto">
+                                                <button 
+                                                    onClick={capturePhoto}
+                                                    className="w-20 h-20 rounded-full border-4 border-white bg-red-600 hover:bg-red-700 active:scale-95 transition-all flex items-center justify-center shadow-2xl"
+                                                    title="Capturar Foto"
+                                                >
+                                                    <div className="w-16 h-16 rounded-full border-2 border-black/10 bg-white shadow-inner flex items-center justify-center">
+                                                        <Camera className="w-8 h-8 text-neutral-800" />
+                                                    </div>
+                                                </button>
+                                                <span className="bg-black/60 text-white rounded-lg px-2 py-1 text-[9px] font-black tracking-widest">TOMAR FOTO</span>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* STATE 3: CORRECTING / DRAGGING DOTS */}
+                                    {scannerStatus === 'correcting' && capturedImage && (
+                                        <div className="relative w-full h-full flex flex-col justify-between bg-slate-950">
+                                            <div className="relative w-full h-full flex items-center justify-center">
+                                                <img 
+                                                    src={capturedImage} 
+                                                    className="w-full h-full object-contain select-none" 
+                                                    alt="Captured page"
+                                                    draggable={false}
+                                                />
+                                                
+                                                {/* Drag gestures overlay layer */}
+                                                <div 
+                                                    ref={containerRef}
+                                                    onMouseMove={handleMouseMove}
+                                                    onTouchMove={handleTouchMove}
+                                                    onMouseUp={() => setActiveDragCorner(null)}
+                                                    onTouchEnd={() => setActiveDragCorner(null)}
+                                                    onMouseLeave={() => setActiveDragCorner(null)}
+                                                    className="absolute inset-x-0 inset-y-0 select-none cursor-crosshair z-20"
+                                                >
+                                                    {/* Connected quadrilateral polygon outline */}
+                                                    <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                                                        <polygon 
+                                                            points={`
+                                                                ${corners.tl.x}%,${corners.tl.y}% 
+                                                                ${corners.tr.x}%,${corners.tr.y}% 
+                                                                ${corners.br.x}%,${corners.br.y}% 
+                                                                ${corners.bl.x}%,${corners.bl.y}%
+                                                            `} 
+                                                            fill="rgba(59, 130, 246, 0.2)" 
+                                                            stroke="#2563eb" 
+                                                            strokeWidth="3" 
+                                                            strokeDasharray="4" 
+                                                        />
+                                                    </svg>
+
+                                                    {/* Handles for alignment */}
+                                                    {(['tl', 'tr', 'bl', 'br'] as const).map(key => {
+                                                        const pt = corners[key];
+                                                        const isDragging = activeDragCorner === key;
+                                                        return (
+                                                            <div
+                                                                key={key}
+                                                                style={{ left: `${pt.x}%`, top: `${pt.y}%` }}
+                                                                onMouseDown={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setActiveDragCorner(key);
+                                                                }}
+                                                                onTouchStart={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setActiveDragCorner(key);
+                                                                }}
+                                                                className="absolute -translate-x-1/2 -translate-y-1/2 w-12 h-12 flex items-center justify-center cursor-move active:scale-125 transition-transform touch-none z-30"
+                                                            >
+                                                                {/* Ring target */}
+                                                                <div className={`w-7 h-7 rounded-full border-4 border-white shadow-2xl transition-all flex items-center justify-center ${isDragging ? 'bg-amber-500 scale-125' : 'bg-blue-600'}`}>
+                                                                    <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
                                             </div>
-                                            <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-blue-600/90 backdrop-blur-md text-white px-6 py-2 rounded-full text-xs font-black tracking-widest flex items-center gap-2 shadow-xl">
-                                                <div className="w-2 h-2 bg-white rounded-full animate-ping" />
-                                                BUSCANDO MARCADORES
+
+                                            {/* Action bar and advice overlay */}
+                                            <div className="absolute top-4 left-4 right-4 z-30 bg-black/70 backdrop-blur-md rounded-xl p-3 border border-white/10 text-white text-[10px] text-center font-semibold pointer-events-none uppercase tracking-wide">
+                                                Alinea los círculos sobre las 4 esquinas negras de la hoja.
                                             </div>
-                                        </>
+
+                                            <div className="absolute bottom-6 left-4 right-4 z-30 flex gap-3 justify-center">
+                                                <button 
+                                                    onClick={() => setScannerStatus('scanning')}
+                                                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-2xl text-xs font-black shadow-lg transition-all"
+                                                >
+                                                    <RefreshCcw className="w-4 h-4" />
+                                                    Re-capturar
+                                                </button>
+                                                <button 
+                                                    onClick={processCapturedScan}
+                                                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl text-xs font-black shadow-lg transition-all border border-emerald-500/20"
+                                                >
+                                                    <CheckCircle className="w-4 h-4" />
+                                                    Procesar Respuestas
+                                                </button>
+                                            </div>
+                                        </div>
                                     )}
-                                </>
+                                </div>
                             ) : (
                                 <div className="w-full h-full relative">
                                     <canvas 
