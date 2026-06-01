@@ -45,7 +45,10 @@ import {
   RefreshCcw,
   Save,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Sparkles,
+  Brain,
+  Upload
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -192,6 +195,10 @@ export default function App() {
   });
   const [activeDragCorner, setActiveDragCorner] = useState<'tl' | 'tr' | 'bl' | 'br' | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiInfo, setAiInfo] = useState<{ confianza: string; advertencias: string[] } | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   // SIMCE State
   const [schoolInfo, setSchoolInfo] = useState({
@@ -850,6 +857,104 @@ export default function App() {
     }, 100);
   };
 
+  const processWithGemini = async (base64Image: string) => {
+    setIsAiProcessing(true);
+    setAiError(null);
+    setAiInfo(null);
+    try {
+      const response = await fetch("/api/omr-ai", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          image: base64Image,
+          questionCount: scannerConfig.questionCount
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || "Algo falló durante el análisis con IA.");
+      }
+
+      const data = await response.json();
+      const answers: { [q: number]: string } = {};
+      for (let q = 1; q <= scannerConfig.questionCount; q++) {
+        const value = data.respuestas[String(q)] || data.respuestas[q];
+        answers[q] = value || "OMITIDA";
+      }
+
+      setScanResult(answers);
+      setAiInfo({
+        confianza: data.confianza,
+        advertencias: data.advertencias || []
+      });
+      setScannerStatus('finished');
+
+      // Draw original image onto output preview canvas
+      const img = new Image();
+      img.src = base64Image;
+      img.onload = () => {
+        const domCanvas = canvasRef.current;
+        if (domCanvas) {
+          domCanvas.width = img.width;
+          domCanvas.height = img.height;
+          const domCtx = domCanvas.getContext('2d');
+          if (domCtx) {
+              domCtx.drawImage(img, 0, 0);
+          }
+        }
+      };
+    } catch (error: any) {
+      console.error("AI OMR error:", error);
+      setAiError(error?.message || "Error al conectar con la API de IA.");
+    } finally {
+      setIsAiProcessing(false);
+    }
+  };
+
+  const readFileAsBase64 = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      setCapturedImage(result);
+      setScannerStatus('correcting');
+      setCorners({
+        tl: { x: 20, y: 20 },
+        tr: { x: 80, y: 20 },
+        bl: { x: 20, y: 80 },
+        br: { x: 80, y: 80 }
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      readFileAsBase64(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDraggingFile(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      readFileAsBase64(file);
+    }
+  };
+
   const saveScanToStudent = () => {
     if (!scanResult || !scannerConfig.selectedStudentId) return;
     
@@ -1485,15 +1590,19 @@ export default function App() {
                         </div>
 
                         <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'aspect-[3/4] md:aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
-                            {isAnalyzing && (
+                            {(isAnalyzing || isAiProcessing) && (
                                 <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-6 text-center">
                                     <div className="relative flex items-center justify-center mb-6">
                                         <div className="w-20 h-20 rounded-full border-4 border-blue-500/20 border-t-emerald-500 animate-spin" />
-                                        <Scan className="w-8 h-8 text-emerald-400 absolute animate-pulse" />
+                                        <Brain className="w-8 h-8 text-indigo-400 absolute animate-pulse animate-bounce" />
                                     </div>
-                                    <h4 className="text-lg font-bold text-white mb-2">Procesando Hoja de Respuestas</h4>
-                                    <p className="text-xs text-slate-300 max-w-xs">
-                                        Detectando marcadores y analizando respuestas automáticamente...
+                                    <h4 className="text-lg font-bold text-white mb-2">
+                                        {isAiProcessing ? 'Analizando con IA de Gemini' : 'Procesando Hoja de Respuestas'}
+                                    </h4>
+                                    <p className="text-xs text-slate-300 max-w-xs leading-relaxed">
+                                        {isAiProcessing 
+                                         ? 'Nuestra IA está localizando los marcadores, corrigiendo perspectiva/inclinación, analizando círculos y comparando su contraste para alta fidelidad...'
+                                         : 'Detectando marcadores y analizando respuestas automáticamente...'}
                                     </p>
                                 </div>
                             )}
@@ -1511,19 +1620,43 @@ export default function App() {
                                 <div className="relative w-full h-full flex flex-col justify-between overflow-hidden">
                                     {/* STATE 1: IDLE */}
                                     {scannerStatus === 'idle' && (
-                                        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-900">
-                                            <div className="w-56 h-72 border-4 border-dashed border-white/20 rounded-3xl mb-6 flex items-center justify-center bg-black/20 animate-pulse">
-                                                <Scan className="w-16 h-16 text-white/30 animate-bounce" />
+                                        <div 
+                                            onDragOver={handleDragOver}
+                                            onDragLeave={handleDragLeave}
+                                            onDrop={handleDrop}
+                                            className={`absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 transition-all duration-300 ${isDraggingFile ? 'bg-slate-800 border-4 border-dashed border-blue-500' : 'bg-slate-900'}`}
+                                        >
+                                            <div className="w-full max-w-sm bg-white/5 border border-white/10 rounded-2xl p-6 mb-6 flex flex-col items-center shadow-lg">
+                                                <Upload className="w-12 h-12 text-blue-400 mb-3 animate-pulse" />
+                                                <span className="text-white text-sm font-bold block mb-1">Arrastra aquí la hoja de respuesta</span>
+                                                <span className="text-[10px] text-slate-400 block mb-4">Soporta PNG, JPG o escaneo directo</span>
+                                                
+                                                <label className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all inline-block">
+                                                    Seleccionar Archivo
+                                                    <input 
+                                                        type="file" 
+                                                        accept="image/*" 
+                                                        onChange={handleFileSelect} 
+                                                        className="hidden" 
+                                                    />
+                                                </label>
                                             </div>
+
+                                            <div className="flex items-center gap-2 mb-6 w-full max-w-xs text-slate-500">
+                                                <div className="h-[1px] bg-slate-800 flex-1" />
+                                                <span className="text-[10px] uppercase font-black tracking-widest leading-none">O</span>
+                                                <div className="h-[1px] bg-slate-800 flex-1" />
+                                            </div>
+
                                             <button 
                                                 onClick={() => {
                                                     setScannerStatus('scanning');
                                                     setIsFullScreen(true);
                                                 }}
-                                                className="flex items-center gap-3 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-10 py-5 rounded-3xl text-xl font-black shadow-2xl transition-all"
+                                                className="flex items-center gap-3 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-8 py-4 rounded-2xl text-md font-black shadow-2xl transition-all"
                                             >
-                                                <Camera className="w-7 h-7 animate-pulse" />
-                                                INICIAR CÁMARA
+                                                <Camera className="w-5 h-5 animate-pulse" />
+                                                USAR CÁMARA EN VIVO
                                             </button>
                                         </div>
                                     )}
@@ -1671,21 +1804,37 @@ export default function App() {
                                                 Alinea los círculos sobre las 4 esquinas negras de la hoja.
                                             </div>
 
-                                            <div className="absolute bottom-6 left-4 right-4 z-30 flex gap-3 justify-center">
-                                                <button 
-                                                    onClick={() => setScannerStatus('scanning')}
-                                                    className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-2xl text-xs font-black shadow-lg transition-all"
-                                                >
-                                                    <RefreshCcw className="w-4 h-4" />
-                                                    Re-capturar
-                                                </button>
-                                                <button 
-                                                    onClick={processCapturedScan}
-                                                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-2xl text-xs font-black shadow-lg transition-all border border-emerald-500/20"
-                                                >
-                                                    <CheckCircle className="w-4 h-4" />
-                                                    Procesar Respuestas
-                                                </button>
+                                            <div className="absolute bottom-6 left-4 right-4 z-30 flex flex-col items-center gap-3">
+                                                {aiError && (
+                                                    <div className="bg-red-500/90 text-white rounded-xl px-4 py-2 text-xs font-bold shadow-lg flex items-center gap-2 max-w-sm border border-red-400/20 backdrop-blur-sm">
+                                                        <AlertTriangle className="w-4 h-4 text-white" />
+                                                        <span>{aiError}</span>
+                                                    </div>
+                                                )}
+                                                <div className="flex gap-2 justify-center flex-wrap">
+                                                    <button 
+                                                        onClick={() => setScannerStatus('scanning')}
+                                                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-2xl text-xs font-black shadow-lg transition-all"
+                                                    >
+                                                        <RefreshCcw className="w-4 h-4" />
+                                                        Re-capturar
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => processCapturedScan()}
+                                                        className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-2xl text-xs font-black shadow-lg transition-all border border-emerald-500/20"
+                                                    >
+                                                        <CheckCircle className="w-4 h-4" />
+                                                        Procesar Localmente
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => processWithGemini(capturedImage!)}
+                                                        disabled={isAiProcessing}
+                                                        className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white px-4 py-3 rounded-2xl text-xs font-black shadow-lg border border-indigo-500/20 transition-all disabled:opacity-50"
+                                                    >
+                                                        <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                                                        Procesar con IA (Gemini)
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                     )}
@@ -1741,6 +1890,30 @@ export default function App() {
                                         </button>
                                     </div>
                                 </div>
+
+                                {aiInfo && (
+                                    <div className="mb-4 p-4 bg-indigo-50 border border-indigo-150 rounded-xl space-y-2 text-left">
+                                        <div className="flex justify-between items-center text-xs">
+                                            <div className="flex items-center gap-2">
+                                                <Brain className="w-4 h-4 text-indigo-600" />
+                                                <span className="font-bold text-indigo-900">Análisis OMR Asistido por IA (Gemini)</span>
+                                            </div>
+                                            <span className={`px-2.5 py-0.5 rounded text-[10px] uppercase font-black text-white ${aiInfo.confianza === 'alta' ? 'bg-emerald-500' : aiInfo.confianza === 'media' ? 'bg-amber-500' : 'bg-red-500'}`}>
+                                                Confianza: {aiInfo.confianza}
+                                            </span>
+                                        </div>
+                                        {aiInfo.advertencias.length > 0 && (
+                                            <div className="text-[10px] text-indigo-700 space-y-1 bg-white/50 p-2.5 rounded-lg border border-indigo-100/50">
+                                                <span className="font-bold block">Observaciones del Escaneo:</span>
+                                                <ul className="list-disc pl-4 space-y-0.5 font-medium">
+                                                    {aiInfo.advertencias.map((adv, idx) => (
+                                                        <li key={idx}>{adv}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                                 <div className="grid grid-cols-6 md:grid-cols-10 gap-2">
                                     {Object.entries(scanResult).map(([q, res]) => (
                                         <div key={q} className={`flex flex-col items-center bg-white border p-1 rounded ${res === scannerConfig.answerKey[Number(q)] ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200'}`}>
