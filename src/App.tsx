@@ -512,17 +512,17 @@ export default function App() {
         // Coarse scan step (e.g. every 5 pixels) for high speed
         const step = Math.max(3, Math.floor(width / 150));
         
-        // Adaptive sampling offsets scaled to image resolution
-        const R1 = Math.max(10, Math.floor(img.width * 0.012));
-        const R2 = Math.max(18, Math.floor(img.width * 0.022));
-        const R_inner = Math.max(4, Math.floor(img.width * 0.006));
+        // Capped adaptive sampling offsets to prevent spilling onto outer borders or non-sheet regions
+        const R1 = Math.max(6, Math.min(15, Math.floor(img.width * 0.010)));
+        const R2 = Math.max(12, Math.min(26, Math.floor(img.width * 0.018)));
+        const R_inner = Math.max(2, Math.min(6, Math.floor(img.width * 0.004)));
 
         for (let y = startY + R2 + 5; y < endY - R2 - 5; y += step) {
             for (let x = startX + R2 + 5; x < endX - R2 - 5; x += step) {
                 const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
                 const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
                 
-                // Inspect potentially dark centers
+                // Inspect potentially dark centers (below 140 gray level)
                 if (bCenter < 140) {
                     // Quick check if center is a local minimum
                     let isLocalMin = true;
@@ -577,23 +577,24 @@ export default function App() {
                         // High surroundings brightness - low center brightness
                         const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
                         
-                        // Verify core structure (the black solid marker width)
+                        // Verify core structure (the black solid marker width) in close range (solid core)
                         let innerDarkCount = 0;
                         let innerPoints = 0;
-                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 2) {
-                            const sx = Math.floor(x + Math.cos(angle) * R_inner);
-                            const sy = Math.floor(y + Math.sin(angle) * R_inner);
+                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                            const rx_inner = Math.max(2, Math.floor(R_inner / 2));
+                            const sx = Math.floor(x + Math.cos(angle) * rx_inner);
+                            const sy = Math.floor(y + Math.sin(angle) * rx_inner);
                             const sidx = (sy * img.width + sx) * 4;
                             if (sidx >= 0 && sidx < data.length) {
                                 const bS = (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
-                                if (bS < bCenter + 35) {
+                                if (bS < bCenter + 50 || bS < 140) {
                                     innerDarkCount++;
                                 }
                                 innerPoints++;
                             }
                         }
                         
-                        if (innerPoints > 0 && innerDarkCount >= 3) {
+                        if (innerPoints > 0 && innerDarkCount >= 5) {
                             if (score > maxScore) {
                                 maxScore = score;
                                 bestX = x;
@@ -606,7 +607,7 @@ export default function App() {
         }
 
         // Refine with 1-pixel precision in a local 16x16 window
-        if (maxScore > -50 && bestX > 0 && bestY > 0) {
+        if (maxScore > -55 && bestX > 0 && bestY > 0) {
             let refX = bestX, refY = bestY, refMaxScore = maxScore;
             for (let dy = -8; dy <= 8; dy++) {
                 for (let dx = -8; dx <= 8; dx++) {
@@ -717,10 +718,23 @@ export default function App() {
         br: { x: (cornersToUse.br.x / 100) * img.width, y: (cornersToUse.br.y / 100) * img.height }
     };
 
+    // Helper: Bilinear interpolation mapped relative to the detected corners setup
+    const getQuadPoint = (tx: number, ty: number) => {
+        const x = (1 - tx) * (1 - ty) * absoluteCorners.tl.x +
+                  tx * (1 - ty) * absoluteCorners.tr.x +
+                  (1 - tx) * ty * absoluteCorners.bl.x +
+                  tx * ty * absoluteCorners.br.x;
+        const y = (1 - tx) * (1 - ty) * absoluteCorners.tl.y +
+                  tx * (1 - ty) * absoluteCorners.tr.y +
+                  (1 - tx) * ty * absoluteCorners.bl.y +
+                  tx * ty * absoluteCorners.br.y;
+        return { x, y };
+    };
+
     const detectedAnswers: { [q: number]: string } = {};
     const options = ['A', 'B', 'C', 'D'];
     
-    // Draw visual corners on the output canvas
+    // Draw visual corners on the output canvas for feedback
     tempCtx.fillStyle = '#10b981';
     Object.values(absoluteCorners).forEach(c => {
         tempCtx.beginPath();
@@ -735,47 +749,87 @@ export default function App() {
         const col = Math.floor(i / 20);
         const row = i % 20;
 
-        const tx = (16 + (col * 22)) / 100;
-        const ty = (19 + (row * 3.8)) / 100;
+        const tyBubble = (19 + (row * 3.8)) / 100;
 
-        const topX = absoluteCorners.tl.x + tx * (absoluteCorners.tr.x - absoluteCorners.tl.x);
-        const topY = absoluteCorners.tl.y + tx * (absoluteCorners.tr.y - absoluteCorners.tl.y);
-        const bottomX = absoluteCorners.bl.x + tx * (absoluteCorners.br.x - absoluteCorners.bl.x);
-        const bottomY = absoluteCorners.bl.y + tx * (absoluteCorners.br.y - absoluteCorners.bl.y);
-        const qX = topX + ty * (bottomX - topX);
-        const qY = topY + ty * (bottomY - topY);
+        let selectedOpt = '-';
 
-        let bestDarkness = -1;
-        let detectedOpt = '-';
+        const optionBrightness: { [opt: string]: number } = {};
+        const optionCoords: { [opt: string]: { x: number, y: number } } = {};
 
+        // 1. Calculate average brightness at each candidate option bubble
         options.forEach((opt, oIdx) => {
-            const bubbleX = qX + (3.5 + oIdx * 3.6) * (img.width / 100);
-            const bubbleY = qY;
-            
-            const sampleSize = Math.max(2, Math.floor(img.width / 140));
-            let totalDark = 0;
+            const txBubble = ((16 + (col * 22)) + 3.5 + (oIdx * 3.6)) / 100;
+            const pt = getQuadPoint(txBubble, tyBubble);
+            optionCoords[opt] = pt;
+
+            const sampleSize = Math.max(2, Math.floor(img.width / 160));
+            let sumBright = 0;
+            let count = 0;
             for (let dy = -sampleSize; dy <= sampleSize; dy++) {
                 for (let dx = -sampleSize; dx <= sampleSize; dx++) {
-                    const sIdx = (Math.floor(bubbleY + dy) * img.width + Math.floor(bubbleX + dx)) * 4;
+                    const sIdx = (Math.floor(pt.y + dy) * img.width + Math.floor(pt.x + dx)) * 4;
                     if (sIdx >= 0 && sIdx < data.length) {
-                        if ((data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3 < 110) totalDark++;
+                        const b = (data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3;
+                        sumBright += b;
+                        count++;
                     }
                 }
             }
+            optionBrightness[opt] = count > 0 ? (sumBright / count) : 255;
+        });
 
-            if (totalDark > bestDarkness) {
-                bestDarkness = totalDark;
-                detectedOpt = opt;
+        // 2. Determine darkest bubble and reference brightness
+        let minBright = 255;
+        let candidateOpt = '-';
+        options.forEach(opt => {
+            if (optionBrightness[opt] < minBright) {
+                minBright = optionBrightness[opt];
+                candidateOpt = opt;
             }
+        });
 
+        let otherSum = 0;
+        let otherCount = 0;
+        options.forEach(opt => {
+            if (opt !== candidateOpt) {
+                otherSum += optionBrightness[opt];
+                otherCount++;
+            }
+        });
+        const otherAvg = otherCount > 0 ? (otherSum / otherCount) : 255;
+
+        // OMR fill check: candidate must be significantly darker than other options
+        const contrast = otherAvg - minBright;
+        const isFilled = (contrast > 20) && (minBright < 170);
+
+        if (isFilled) {
+            selectedOpt = candidateOpt;
+        }
+
+        // 3. Draw diagnostic circles on feedback display canvas
+        options.forEach((opt) => {
+            const pt = optionCoords[opt];
+            const sampleSize = Math.max(2, Math.floor(img.width / 140));
             tempCtx.beginPath();
-            tempCtx.arc(bubbleX, bubbleY, sampleSize, 0, Math.PI * 2);
-            tempCtx.strokeStyle = totalDark > 8 ? '#3b82f6' : '#cbd5e1';
+            tempCtx.arc(pt.x, pt.y, sampleSize, 0, Math.PI * 2);
+            
+            if (opt === selectedOpt) {
+                // Shaded / detected selection: blue outline or green if correct
+                const isCorrect = selectedOpt === scannerConfig.answerKey[i + 1];
+                tempCtx.strokeStyle = isCorrect ? '#10b981' : '#3b82f6';
+                tempCtx.lineWidth = Math.max(2, Math.floor(img.width / 400));
+                tempCtx.fillStyle = 'rgba(59, 130, 246, 0.3)';
+                tempCtx.fill();
+            } else {
+                // Empty option
+                tempCtx.strokeStyle = '#cbd5e1';
+                tempCtx.lineWidth = 1;
+            }
             tempCtx.stroke();
         });
 
-        if (bestDarkness > 6) {
-            detectedAnswers[i + 1] = detectedOpt;
+        if (selectedOpt !== '-') {
+            detectedAnswers[i + 1] = selectedOpt;
         }
     }
 
@@ -1458,14 +1512,17 @@ export default function App() {
                                     {/* STATE 1: IDLE */}
                                     {scannerStatus === 'idle' && (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 bg-slate-900">
-                                            <div className="w-56 h-72 border-4 border-dashed border-white/20 rounded-3xl mb-6 flex items-center justify-center bg-black/20">
-                                                <Scan className="w-16 h-16 text-white/20 animate-pulse" />
+                                            <div className="w-56 h-72 border-4 border-dashed border-white/20 rounded-3xl mb-6 flex items-center justify-center bg-black/20 animate-pulse">
+                                                <Scan className="w-16 h-16 text-white/30 animate-bounce" />
                                             </div>
                                             <button 
-                                                onClick={() => setScannerStatus('scanning')}
-                                                className="flex items-center gap-3 bg-blue-600 text-white px-10 py-5 rounded-3xl text-xl font-black shadow-2xl hover:scale-105 active:scale-95 transition-all"
+                                                onClick={() => {
+                                                    setScannerStatus('scanning');
+                                                    setIsFullScreen(true);
+                                                }}
+                                                className="flex items-center gap-3 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-10 py-5 rounded-3xl text-xl font-black shadow-2xl transition-all"
                                             >
-                                                <Camera className="w-7 h-7" />
+                                                <Camera className="w-7 h-7 animate-pulse" />
                                                 INICIAR CÁMARA
                                             </button>
                                         </div>
@@ -1474,11 +1531,23 @@ export default function App() {
                                     {/* STATE 2: SCANNING / LIVE PREVIEW */}
                                     {scannerStatus === 'scanning' && (
                                         <div className="relative w-full h-full flex flex-col justify-between">
+                                            <style>{`
+                                                @keyframes laserScan {
+                                                    0% { top: 4%; }
+                                                    50% { top: 96%; }
+                                                    100% { top: 4%; }
+                                                }
+                                                .animate-laser {
+                                                    animation: laserScan 2.2s ease-in-out infinite;
+                                                }
+                                            `}</style>
+
                                             {/* @ts-ignore */}
                                             <Webcam
                                                 audio={false}
                                                 ref={webcamRef}
                                                 screenshotFormat="image/jpeg"
+                                                screenshotQuality={1}
                                                 mirrored={false}
                                                 className="w-full h-full object-contain bg-slate-950"
                                                 videoConstraints={{ 
@@ -1491,20 +1560,24 @@ export default function App() {
                                             {/* Beautiful QR-like center frame guide */}
                                             <div className="absolute inset-0 flex flex-col justify-between p-6 pointer-events-none">
                                                 {/* Top Instructions overlay */}
-                                                <div className="self-center bg-black/60 backdrop-blur-md text-white border border-white/10 px-4 py-2 rounded-full text-[11px] font-bold tracking-wider uppercase mb-2 flex items-center gap-2">
-                                                    <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
-                                                    Modo Captura Activo
+                                                <div className="self-center bg-black/75 backdrop-blur-md text-white border border-white/15 px-4 py-2 rounded-full text-[11px] font-bold tracking-wider uppercase mb-2 flex items-center gap-2">
+                                                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping" />
+                                                    Modo Captura Activo (Alta Calidad)
                                                 </div>
 
                                                 {/* Central frame guide */}
-                                                <div className="w-60 h-72 border-2 border-white/20 rounded-2xl mx-auto self-center flex items-center justify-center relative">
+                                                <div className="w-64 h-80 border-2 border-emerald-500/25 rounded-2xl mx-auto self-center flex items-center justify-center relative bg-black/10 backdrop-blur-[0.5px]">
                                                     {/* Corner brackets */}
-                                                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-xl" />
-                                                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-xl" />
-                                                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-xl" />
-                                                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-xl" />
-                                                    <div className="text-white/40 text-[10px] font-bold text-center p-4">
-                                                        Alinea los 4 marcadores de la hoja dentro de este recuadro y presiona Capturar
+                                                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-emerald-400 rounded-tl-xl" />
+                                                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-emerald-400 rounded-tr-xl" />
+                                                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-emerald-400 rounded-bl-xl" />
+                                                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-emerald-400 rounded-br-xl" />
+                                                    
+                                                     {/* Moving Laser line */}
+                                                    <div className="absolute left-0 right-0 h-1 bg-emerald-400/90 shadow-[0_0_12px_rgba(52,211,153,0.8)] animate-laser rounded-full" />
+
+                                                    <div className="text-white/90 text-[10px] font-bold text-center leading-relaxed p-4 bg-black/60 rounded-xl max-w-[200px] border border-white/10 shadow-lg">
+                                                        Alinea los 4 marcadores de las esquinas dentro de este recuadro y presiona Capturar
                                                     </div>
                                                 </div>
 
@@ -1516,14 +1589,14 @@ export default function App() {
                                             <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-2 pointer-events-auto">
                                                 <button 
                                                     onClick={capturePhoto}
-                                                    className="w-20 h-20 rounded-full border-4 border-white bg-red-600 hover:bg-red-700 active:scale-95 transition-all flex items-center justify-center shadow-2xl"
+                                                    className="w-20 h-20 rounded-full border-4 border-white bg-red-600 hover:bg-red-700 active:scale-90 transition-all flex items-center justify-center shadow-2xl"
                                                     title="Capturar Foto"
                                                 >
                                                     <div className="w-16 h-16 rounded-full border-2 border-black/10 bg-white shadow-inner flex items-center justify-center">
                                                         <Camera className="w-8 h-8 text-neutral-800" />
                                                     </div>
                                                 </button>
-                                                <span className="bg-black/60 text-white rounded-lg px-2 py-1 text-[9px] font-black tracking-widest">TOMAR FOTO</span>
+                                                <span className="bg-black/75 text-white rounded-lg px-2 py-1 text-[9px] font-black tracking-widest border border-white/10 uppercase">Tomar Foto</span>
                                             </div>
                                         </div>
                                     )}
