@@ -100,10 +100,12 @@ Debes responder estrictamente con un JSON estructurado de la siguiente forma, si
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
-        contents: [
-          imagePart,
-          { text: `Por favor analiza esta imagen de hoja de respuestas y extrae las alternativas marcadas por el estudiante para las preguntas de la 1 a la ${count}. Retorna un JSON válido.` }
-        ],
+        contents: {
+          parts: [
+            imagePart,
+            { text: `Por favor analiza esta imagen de hoja de respuestas y extrae las alternativas marcadas por el estudiante para las preguntas de la 1 a la ${count}. Retorna un JSON válido.` }
+          ]
+        },
         config: {
           systemInstruction,
           responseMimeType: "application/json",

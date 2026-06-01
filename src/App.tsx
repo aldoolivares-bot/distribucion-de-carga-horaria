@@ -485,6 +485,141 @@ export default function App() {
     doc.save('Hoja_Respuestas_SIMCE.pdf');
   };
 
+  const fillSampleAnswerKey = () => {
+    const sampleKey: { [q: number]: string } = {};
+    const options = ['A', 'B', 'C', 'D', 'E'];
+    for (let i = 1; i <= scannerConfig.questionCount; i++) {
+        const idx = (i * 3 + 1) % options.length;
+        sampleKey[i] = options[idx];
+    }
+    setScannerConfig(prev => ({
+        ...prev,
+        answerKey: sampleKey
+    }));
+  };
+
+  const loadDemoSheet = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 1000;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // 1. White Background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 800, 1000);
+
+    // 2. Paper styling & border
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, 790, 990);
+
+    // 3. 4 Black Square Corner Markers (positioned at tl, tr, bl, br)
+    const markerRadius = 15;
+    ctx.fillStyle = '#0f172a';
+    
+    // Draw TL Square Marker
+    ctx.fillRect(160 - markerRadius, 200 - markerRadius, markerRadius * 2, markerRadius * 2);
+    // Draw TR Square Marker
+    ctx.fillRect(640 - markerRadius, 200 - markerRadius, markerRadius * 2, markerRadius * 2);
+    // Draw BL Square Marker
+    ctx.fillRect(160 - markerRadius, 800 - markerRadius, markerRadius * 2, markerRadius * 2);
+    // Draw BR Square Marker
+    ctx.fillRect(640 - markerRadius, 800 - markerRadius, markerRadius * 2, markerRadius * 2);
+
+    // 4. Header Titles & Info
+    ctx.fillStyle = '#1e293b';
+    ctx.font = 'bold 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('HOJA DE RESPUESTAS - SIMCE DEMO', 400, 70);
+
+    ctx.fillStyle = '#475569';
+    ctx.font = '14px system-ui, sans-serif';
+    ctx.fillText('Estudiante: LURDES CAMILA AVALOS', 400, 105);
+    ctx.fillText('Establecimiento: ESCUELA LAURA ROBLES SILVA | Curso: 8°B', 400, 125);
+
+    // Separator line
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(100, 145);
+    ctx.lineTo(700, 145);
+    ctx.stroke();
+
+    // 5. Draw Bubbles and fill them matching a key
+    const options = ['A', 'B', 'C', 'D', 'E'];
+    ctx.textAlign = 'center';
+
+    for (let i = 0; i < scannerConfig.questionCount; i++) {
+        const col = Math.floor(i / 20);
+        const row = i % 20;
+
+        const tyBubble = (19 + (row * 3.8)) / 100;
+        const cy = 200 + tyBubble * 600;
+
+        // Draw Question Number
+        const txNum = ((16 + (col * 22)) + 0.5) / 100;
+        const cxNum = 160 + txNum * 480;
+
+        ctx.fillStyle = '#64748b';
+        ctx.font = 'bold 12px system-ui, sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${i + 1}.`, cxNum - 8, cy + 4);
+
+        const filledOptionIdx = (i * 3 + 1) % options.length;
+
+        options.forEach((opt, oIdx) => {
+            const txBubble = ((16 + (col * 22)) + 3.5 + (oIdx * 3.2)) / 100;
+            const cx = 160 + txBubble * 480;
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+            
+            if (oIdx === filledOptionIdx) {
+                ctx.fillStyle = '#1e293b'; 
+                ctx.fill();
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 10px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(opt, cx, cy + 3.5);
+            } else {
+                ctx.strokeStyle = '#94a3b8';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                ctx.fillStyle = '#64748b';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(opt, cx, cy + 3.5);
+            }
+        });
+    }
+
+    const imageSrc = canvas.toDataURL('image/jpeg');
+
+    const mockAnsKey: { [q: number]: string } = {};
+    for (let i = 0; i < scannerConfig.questionCount; i++) {
+        mockAnsKey[i + 1] = options[(i * 3 + 1) % options.length];
+    }
+
+    setScannerConfig(prev => ({
+        ...prev,
+        answerKey: mockAnsKey
+    }));
+
+    setCapturedImage(imageSrc);
+    
+    setCorners({
+        tl: { x: 20, y: 20 },
+        tr: { x: 80, y: 20 },
+        bl: { x: 20, y: 80 },
+        br: { x: 80, y: 80 }
+    });
+
+    setScannerStatus('correcting');
+  };
+
   const capturePhoto = async () => {
     if (!webcamRef.current) return;
     const imageSrc = webcamRef.current.getScreenshot();
@@ -1590,10 +1725,18 @@ export default function App() {
                   </section>
 
                   <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                    <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                        <MousePointer2 className="w-5 h-5 text-emerald-500" />
-                        Clave de Respuestas
-                    </h3>
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-md font-bold flex items-center gap-1.5">
+                            <MousePointer2 className="w-4 h-4 text-emerald-500" />
+                            Clave de Respuestas
+                        </h3>
+                        <button 
+                            onClick={fillSampleAnswerKey}
+                            className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-2 py-1 rounded transition-all cursor-pointer"
+                        >
+                            Llenar de Prueba
+                        </button>
+                    </div>
                     <div className="grid grid-cols-5 gap-2 max-h-[300px] overflow-y-auto pr-2">
                         {Array.from({ length: scannerConfig.questionCount }).map((_, i) => {
                             const q = i + 1;
@@ -1689,15 +1832,24 @@ export default function App() {
                                                 <span className="text-white text-sm font-bold block mb-1">Arrastra aquí la hoja de respuesta</span>
                                                 <span className="text-[10px] text-slate-400 block mb-4">Soporta PNG, JPG o escaneo directo</span>
                                                 
-                                                <label className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all inline-block">
-                                                    Seleccionar Archivo
-                                                    <input 
-                                                        type="file" 
-                                                        accept="image/*" 
-                                                        onChange={handleFileSelect} 
-                                                        className="hidden" 
-                                                    />
-                                                </label>
+                                                <div className="flex flex-wrap gap-3 mt-1 justify-center">
+                                                    <label className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-all inline-block">
+                                                        Seleccionar Archivo
+                                                        <input 
+                                                            type="file" 
+                                                            accept="image/*" 
+                                                            onChange={handleFileSelect} 
+                                                            className="hidden" 
+                                                        />
+                                                    </label>
+                                                    <button
+                                                        onClick={loadDemoSheet}
+                                                        className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1 border border-blue-500/10 shadow-lg"
+                                                    >
+                                                        <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                                                        Cargar Hoja Demo
+                                                    </button>
+                                                </div>
                                             </div>
 
                                             <div className="flex items-center gap-2 mb-6 w-full max-w-xs text-slate-500">
