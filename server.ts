@@ -73,33 +73,36 @@ async function startServer() {
         },
       };
 
-      const systemInstruction = `Eres un sistema OMR (Optical Mark Recognition) experto de clase mundial, similar a ZipGrade, integrado con Inteligencia Artificial avanzada.
+      const systemInstruction = `Eres un sistema OMR (Optical Mark Recognition) experto, igual a ZipGrade. Tu tarea es leer hojas de respuestas escaneadas con cámara de celular.
 
 ## FORMATO DE LA HOJA
-- 4 marcadores cuadrados negros en las 4 esquinas de la hoja.
-- 30 preguntas organizadas en 2 columnas:
-  • Columna izquierda: preguntas del 1 al 20.
-  • Columna derecha: preguntas del 21 al 30.
-- Cada pregunta tiene 5 círculos con letras: A B C D E (u opciones similares).
-- Los círculos marcados están RELLENOS o con una marca/trazado interior visible.
-- Los no marcados están VACÍOS o solo tienen bordes claros de círculo.
+- 4 marcadores cuadrados negros sólidos en las 4 esquinas de la hoja (son cuadrados, NO círculos).
+- ${count} preguntas en columnas (columna izquierda preguntas 1-20, columna derecha 21 en adelante).
+- Cada pregunta tiene círculos con letras: A B C D E.
+- Círculo MARCADO: relleno oscuro, rayado, o con marca visible dentro.
+- Círculo NO marcado: vacío, solo borde.
 
-## PASO 1 - ORIENTACIÓN
-Localiza los 4 cuadros negros de las esquinas. Úsalos para corregir mentalmente la perspectiva, sombras, inclinación y rotación de la imagen.
+## PASO 1 — CORRECCIÓN DE PERSPECTIVA
+La foto fue tomada con celular y puede estar inclinada o en ángulo.
+Usa los 4 cuadrados negros de las esquinas como referencias para enderezar mentalmente la imagen antes de leer.
 
-## PASO 2 - LECTURA
-Recorre cada fila de pregunta comparando sus 5 círculos entre sí para la columna izquierda (1 al 20) y la columna derecha (21 al 30).
-La fila/círculo que se vea más oscuro, relleno o con trazo fuerte comparado con los otros círculos es la respuesta del estudiante.
-- Solo marca OMITIDA si los círculos son visualmente idénticos (todos vacíos). No pongas OMITIDA por defecto — esfuérzate en distinguir diferencias sutiles de tono o marcas hechas a lápiz.
-- Solo marca INVÁLIDA si hay 2 o más círculos marcados en la misma pregunta.
+## PASO 2 — LECTURA FILA POR FILA
+Para CADA pregunta del 1 al ${count}:
+1. Mira los 5 círculos de esa fila.
+2. Compáralos entre sí — el MÁS OSCURO o RELLENO es la respuesta.
+3. NUNCA uses OMITIDA por defecto. Solo si los 5 círculos son visualmente IDÉNTICOS (todos vacíos) pon OMITIDA.
+4. Si hay 2 o más marcados → INVÁLIDA.
 
-## PASO 3 - RESPUESTA
-Debes responder estrictamente con un JSON estructurado de la siguiente forma, sin bloques de código markdown ni explicaciones de texto adicionales.`;
+## REGLA CRÍTICA
+Prefiere detectar una respuesta aunque tengas duda, en lugar de poner OMITIDA. Una marca de lápiz tenue sigue siendo una marca.
 
-      console.log(`Analyzing OMR sheet with Gemini-3.5-Flash for ${count} questions...`);
+## PASO 3 — RESPUESTA
+Solo JSON válido, sin markdown ni texto extra.`;
+
+      console.log(`Analyzing OMR sheet with gemini-2.0-flash for ${count} questions...`);
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: {
           parts: [
             imagePart,
