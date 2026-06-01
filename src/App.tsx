@@ -817,7 +817,7 @@ export default function App() {
       const bl = findCorner(0, img.height * (1-q), img.width * q, img.height);
       const br = findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height);
 
-      const CONFIDENCE_THRESHOLD = 30;
+      const CONFIDENCE_THRESHOLD = 15;
       const hasAllCorners = tl.score >= CONFIDENCE_THRESHOLD && 
                            tr.score >= CONFIDENCE_THRESHOLD && 
                            bl.score >= CONFIDENCE_THRESHOLD && 
@@ -1790,7 +1790,7 @@ export default function App() {
                             </div>
                         </div>
 
-                        <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'aspect-[3/4] md:aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`}>
+                        <div className={`relative ${isFullScreen ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col' : 'aspect-[3/4] md:aspect-[4/3] bg-slate-950 rounded-2xl overflow-hidden shadow-inner border-4 border-slate-800'}`} style={isFullScreen ? {width:'100vw', height:'100dvh', top:0, left:0} : {}}>
                             {(isAnalyzing || isAiProcessing) && (
                                 <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-6 text-center">
                                     <div className="relative flex items-center justify-center mb-6">
@@ -1862,6 +1862,10 @@ export default function App() {
                                                 onClick={() => {
                                                     setScannerStatus('scanning');
                                                     setIsFullScreen(true);
+                                                    // Request fullscreen API for mobile browsers
+                                                    try {
+                                                      document.documentElement.requestFullscreen?.();
+                                                    } catch(_) {}
                                                 }}
                                                 className="flex items-center gap-3 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-8 py-4 rounded-2xl text-md font-black shadow-2xl transition-all"
                                             >
