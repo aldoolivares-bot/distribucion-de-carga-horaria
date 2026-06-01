@@ -197,7 +197,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [aiInfo, setAiInfo] = useState<{ confianza: string; advertencias: string[] } | null>(null);
+  const [aiInfo, setAiInfo] = useState<{ confianza: string; advertencias: string[]; alumno?: string | null; fecha?: string | null } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   // SIMCE State
@@ -493,368 +493,406 @@ export default function App() {
     setIsAnalyzing(true);
     setCapturedImage(imageSrc);
 
-    // Run custom corner finder on captured image to pre-align the handles
-    const img = new Image();
-    img.src = imageSrc;
-    await new Promise(resolve => img.onload = resolve);
+    try {
+      // Run custom corner finder on captured image to pre-align the handles
+      const img = new Image();
+      img.src = imageSrc;
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve; // guarantees we never hang on broken loading
+      });
 
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) {
+      if (!img.width || !img.height) {
+        throw new Error("No se pudo cargar la imagen de la cámara.");
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        setIsAnalyzing(false);
+        setScannerStatus('correcting');
+        return;
+      }
+      ctx.drawImage(img, 0, 0);
+
+      const imageData = ctx.getImageData(0, 0, img.width, img.height);
+      const data = imageData.data;
+      
+      const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
+          let bestX = 0, bestY = 0, maxScore = -999999;
+          const width = endX - startX;
+          
+          // Coarse scan step (e.g. every 5 pixels) for high speed
+          const step = Math.max(3, Math.floor(width / 150));
+          
+          // Capped adaptive sampling offsets to prevent spilling onto outer borders or non-sheet regions
+          const R1 = Math.max(6, Math.min(15, Math.floor(img.width * 0.010)));
+          const R2 = Math.max(12, Math.min(26, Math.floor(img.width * 0.018)));
+          const R_inner = Math.max(2, Math.min(6, Math.floor(img.width * 0.004)));
+
+          for (let y = startY + R2 + 5; y < endY - R2 - 5; y += step) {
+              for (let x = startX + R2 + 5; x < endX - R2 - 5; x += step) {
+                  const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
+                  if (idx < 0 || idx >= data.length - 2) continue;
+                  const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                  
+                  // Inspect potentially dark centers (below 140 gray level)
+                  if (bCenter < 140) {
+                      // Quick check if center is a local minimum
+                      let isLocalMin = true;
+                      for (let dy = -2; dy <= 2; dy += 2) {
+                          for (let dx = -2; dx <= 2; dx += 2) {
+                              const nidx = (Math.floor(y + dy) * img.width + Math.floor(x + dx)) * 4;
+                              if (nidx >= 0 && nidx < data.length - 2) {
+                                  const nb = (data[nidx] + data[nidx+1] + data[nidx+2]) / 3;
+                                  if (nb < bCenter) {
+                                      isLocalMin = false;
+                                      break;
+                                  }
+                              }
+                          }
+                          if (!isLocalMin) break;
+                      }
+                      
+                      if (!isLocalMin) continue;
+
+                      let surroundSum1 = 0;
+                      let count1 = 0;
+                      let surroundSum2 = 0;
+                      let count2 = 0;
+
+                      // Sample 8 points on outer circle R1 (paper region)
+                      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                          const sx = Math.floor(x + Math.cos(angle) * R1);
+                          const sy = Math.floor(y + Math.sin(angle) * R1);
+                          const sidx = (sy * img.width + sx) * 4;
+                          if (sidx >= 0 && sidx < data.length - 2) {
+                              surroundSum1 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                              count1++;
+                          }
+                      }
+
+                      // Sample 8 points on outer circle R2 (paper region)
+                      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                          const sx = Math.floor(x + Math.cos(angle) * R2);
+                          const sy = Math.floor(y + Math.sin(angle) * R2);
+                          const sidx = (sy * img.width + sx) * 4;
+                          if (sidx >= 0 && sidx < data.length - 2) {
+                              surroundSum2 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                              count2++;
+                          }
+                      }
+
+                      if (count1 > 0 && count2 > 0) {
+                          const avgS1 = surroundSum1 / count1;
+                          const avgS2 = surroundSum2 / count2;
+                          
+                          // Circular dark center on bright background means:
+                          // High surroundings brightness - low center brightness
+                          const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
+                          
+                          // Verify core structure (the black solid marker width) in close range (solid core)
+                          let innerDarkCount = 0;
+                          let innerPoints = 0;
+                          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                              const rx_inner = Math.max(2, Math.floor(R_inner / 2));
+                              const sx = Math.floor(x + Math.cos(angle) * rx_inner);
+                              const sy = Math.floor(y + Math.sin(angle) * rx_inner);
+                              const sidx = (sy * img.width + sx) * 4;
+                              if (sidx >= 0 && sidx < data.length - 2) {
+                                  const bS = (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
+                                  if (bS < bCenter + 50 || bS < 140) {
+                                      innerDarkCount++;
+                                  }
+                                  innerPoints++;
+                              }
+                          }
+                          
+                          if (innerPoints > 0 && innerDarkCount >= 5) {
+                              if (score > maxScore) {
+                                  maxScore = score;
+                                  bestX = x;
+                                  bestY = y;
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+
+          // Refine with 1-pixel precision in a local 16x16 window
+          if (maxScore > -55 && bestX > 0 && bestY > 0) {
+              let refX = bestX, refY = bestY, refMaxScore = maxScore;
+              for (let dy = -8; dy <= 8; dy++) {
+                  for (let dx = -8; dx <= 8; dx++) {
+                      const rx = bestX + dx;
+                      const ry = bestY + dy;
+                      if (rx >= startX + 5 && rx < endX - 5 && ry >= startY + 5 && ry < endY - 5) {
+                          const idx = (ry * img.width + rx) * 4;
+                          if (idx >= 0 && idx < data.length - 2) {
+                              const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+                              
+                              let surroundSum1 = 0, count1 = 0;
+                              let surroundSum2 = 0, count2 = 0;
+                              for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                                  const sx1 = rx + Math.floor(Math.cos(angle) * R1);
+                                  const sy1 = ry + Math.floor(Math.sin(angle) * R1);
+                                  const sidx1 = (sy1 * img.width + sx1) * 4;
+                                  if (sidx1 >= 0 && sidx1 < data.length - 2) {
+                                      surroundSum1 += (data[sidx1] + data[sidx1+1] + data[sidx1+2]) / 3;
+                                      count1++;
+                                  }
+                                  
+                                  const sx2 = rx + Math.floor(Math.cos(angle) * R2);
+                                  const sy2 = ry + Math.floor(Math.sin(angle) * R2);
+                                  const sidx2 = (sy2 * img.width + sx2) * 4;
+                                  if (sidx2 >= 0 && sidx2 < data.length - 2) {
+                                      surroundSum2 += (data[sidx2] + data[sidx2+1] + data[sidx2+2]) / 3;
+                                      count2++;
+                                  }
+                              }
+                              
+                              if (count1 > 0 && count2 > 0) {
+                                  const avgS1 = surroundSum1 / count1;
+                                  const avgS2 = surroundSum2 / count2;
+                                  const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
+                                  if (score > refMaxScore) {
+                                      refMaxScore = score;
+                                      refX = rx;
+                                      refY = ry;
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              bestX = refX;
+              bestY = refY;
+              maxScore = refMaxScore;
+          }
+
+          return { x: bestX, y: bestY, score: maxScore };
+      };
+
+      const q = 0.45;
+      const tl = findCorner(0, 0, img.width * q, img.height * q);
+      const tr = findCorner(img.width * (1-q), 0, img.width, img.height * q);
+      const bl = findCorner(0, img.height * (1-q), img.width * q, img.height);
+      const br = findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height);
+
+      const CONFIDENCE_THRESHOLD = 30;
+      const hasAllCorners = tl.score >= CONFIDENCE_THRESHOLD && 
+                           tr.score >= CONFIDENCE_THRESHOLD && 
+                           bl.score >= CONFIDENCE_THRESHOLD && 
+                           br.score >= CONFIDENCE_THRESHOLD;
+
+      const detectedCorners = {
+        tl: tl.score >= CONFIDENCE_THRESHOLD ? { x: (tl.x / img.width) * 100, y: (tl.y / img.height) * 100 } : { x: 20, y: 20 },
+        tr: tr.score >= CONFIDENCE_THRESHOLD ? { x: (tr.x / img.width) * 100, y: (tr.y / img.height) * 100 } : { x: 80, y: 20 },
+        bl: bl.score >= CONFIDENCE_THRESHOLD ? { x: (bl.x / img.width) * 100, y: (bl.y / img.height) * 100 } : { x: 20, y: 80 },
+        br: br.score >= CONFIDENCE_THRESHOLD ? { x: (br.x / img.width) * 100, y: (br.y / img.height) * 100 } : { x: 80, y: 80 }
+      };
+
+      setCorners(detectedCorners);
+
+      if (hasAllCorners) {
+        // Auto-detected perfectly! Analyze answers straight away.
+        await processCapturedScan(imageSrc, detectedCorners);
+      } else {
+        // Show manual review/correcting screen for alignment
+        setScannerStatus('correcting');
+      }
+    } catch (err) {
+      console.error("Error in capturePhoto:", err);
+      // Fallback on failure
+      setScannerStatus('correcting');
+    } finally {
       setIsAnalyzing(false);
-      setScannerStatus('correcting');
-      return;
     }
-    ctx.drawImage(img, 0, 0);
-
-    const imageData = ctx.getImageData(0, 0, img.width, img.height);
-    const data = imageData.data;
-    
-    const findCorner = (startX: number, startY: number, endX: number, endY: number) => {
-        let bestX = 0, bestY = 0, maxScore = -999999;
-        const width = endX - startX;
-        
-        // Coarse scan step (e.g. every 5 pixels) for high speed
-        const step = Math.max(3, Math.floor(width / 150));
-        
-        // Capped adaptive sampling offsets to prevent spilling onto outer borders or non-sheet regions
-        const R1 = Math.max(6, Math.min(15, Math.floor(img.width * 0.010)));
-        const R2 = Math.max(12, Math.min(26, Math.floor(img.width * 0.018)));
-        const R_inner = Math.max(2, Math.min(6, Math.floor(img.width * 0.004)));
-
-        for (let y = startY + R2 + 5; y < endY - R2 - 5; y += step) {
-            for (let x = startX + R2 + 5; x < endX - R2 - 5; x += step) {
-                const idx = (Math.floor(y) * img.width + Math.floor(x)) * 4;
-                const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                
-                // Inspect potentially dark centers (below 140 gray level)
-                if (bCenter < 140) {
-                    // Quick check if center is a local minimum
-                    let isLocalMin = true;
-                    for (let dy = -2; dy <= 2; dy += 2) {
-                        for (let dx = -2; dx <= 2; dx += 2) {
-                            const nidx = (Math.floor(y + dy) * img.width + Math.floor(x + dx)) * 4;
-                            if (nidx >= 0 && nidx < data.length) {
-                                const nb = (data[nidx] + data[nidx+1] + data[nidx+2]) / 3;
-                                if (nb < bCenter) {
-                                    isLocalMin = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (!isLocalMin) break;
-                    }
-                    
-                    if (!isLocalMin) continue;
-
-                    let surroundSum1 = 0;
-                    let count1 = 0;
-                    let surroundSum2 = 0;
-                    let count2 = 0;
-
-                    // Sample 8 points on outer circle R1 (paper region)
-                    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-                        const sx = Math.floor(x + Math.cos(angle) * R1);
-                        const sy = Math.floor(y + Math.sin(angle) * R1);
-                        const sidx = (sy * img.width + sx) * 4;
-                        if (sidx >= 0 && sidx < data.length) {
-                            surroundSum1 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
-                            count1++;
-                        }
-                    }
-
-                    // Sample 8 points on outer circle R2 (paper region)
-                    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-                        const sx = Math.floor(x + Math.cos(angle) * R2);
-                        const sy = Math.floor(y + Math.sin(angle) * R2);
-                        const sidx = (sy * img.width + sx) * 4;
-                        if (sidx >= 0 && sidx < data.length) {
-                            surroundSum2 += (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
-                            count2++;
-                        }
-                    }
-
-                    if (count1 > 0 && count2 > 0) {
-                        const avgS1 = surroundSum1 / count1;
-                        const avgS2 = surroundSum2 / count2;
-                        
-                        // Circular dark center on bright background means:
-                        // High surroundings brightness - low center brightness
-                        const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
-                        
-                        // Verify core structure (the black solid marker width) in close range (solid core)
-                        let innerDarkCount = 0;
-                        let innerPoints = 0;
-                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-                            const rx_inner = Math.max(2, Math.floor(R_inner / 2));
-                            const sx = Math.floor(x + Math.cos(angle) * rx_inner);
-                            const sy = Math.floor(y + Math.sin(angle) * rx_inner);
-                            const sidx = (sy * img.width + sx) * 4;
-                            if (sidx >= 0 && sidx < data.length) {
-                                const bS = (data[sidx] + data[sidx+1] + data[sidx+2]) / 3;
-                                if (bS < bCenter + 50 || bS < 140) {
-                                    innerDarkCount++;
-                                }
-                                innerPoints++;
-                            }
-                        }
-                        
-                        if (innerPoints > 0 && innerDarkCount >= 5) {
-                            if (score > maxScore) {
-                                maxScore = score;
-                                bestX = x;
-                                bestY = y;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Refine with 1-pixel precision in a local 16x16 window
-        if (maxScore > -55 && bestX > 0 && bestY > 0) {
-            let refX = bestX, refY = bestY, refMaxScore = maxScore;
-            for (let dy = -8; dy <= 8; dy++) {
-                for (let dx = -8; dx <= 8; dx++) {
-                    const rx = bestX + dx;
-                    const ry = bestY + dy;
-                    if (rx >= startX + 5 && rx < endX - 5 && ry >= startY + 5 && ry < endY - 5) {
-                        const idx = (ry * img.width + rx) * 4;
-                        const bCenter = (data[idx] + data[idx+1] + data[idx+2]) / 3;
-                        
-                        let surroundSum1 = 0, count1 = 0;
-                        let surroundSum2 = 0, count2 = 0;
-                        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
-                            const sx1 = rx + Math.floor(Math.cos(angle) * R1);
-                            const sy1 = ry + Math.floor(Math.sin(angle) * R1);
-                            const sidx1 = (sy1 * img.width + sx1) * 4;
-                            if (sidx1 >= 0 && sidx1 < data.length) {
-                                surroundSum1 += (data[sidx1] + data[sidx1+1] + data[sidx1+2]) / 3;
-                                count1++;
-                            }
-                            
-                            const sx2 = rx + Math.floor(Math.cos(angle) * R2);
-                            const sy2 = ry + Math.floor(Math.sin(angle) * R2);
-                            const sidx2 = (sy2 * img.width + sx2) * 4;
-                            if (sidx2 >= 0 && sidx2 < data.length) {
-                                surroundSum2 += (data[sidx2] + data[sidx2+1] + data[sidx2+2]) / 3;
-                                count2++;
-                            }
-                        }
-                        
-                        if (count1 > 0 && count2 > 0) {
-                            const avgS1 = surroundSum1 / count1;
-                            const avgS2 = surroundSum2 / count2;
-                            const score = (avgS1 - bCenter) + (avgS2 - bCenter) - (bCenter * 0.4);
-                            if (score > refMaxScore) {
-                                refMaxScore = score;
-                                refX = rx;
-                                refY = ry;
-                            }
-                        }
-                    }
-                }
-            }
-            bestX = refX;
-            bestY = refY;
-            maxScore = refMaxScore;
-        }
-
-        return { x: bestX, y: bestY, score: maxScore };
-    };
-
-    const q = 0.45;
-    const tl = findCorner(0, 0, img.width * q, img.height * q);
-    const tr = findCorner(img.width * (1-q), 0, img.width, img.height * q);
-    const bl = findCorner(0, img.height * (1-q), img.width * q, img.height);
-    const br = findCorner(img.width * (1-q), img.height * (1-q), img.width, img.height);
-
-    const CONFIDENCE_THRESHOLD = 30;
-    const hasAllCorners = tl.score >= CONFIDENCE_THRESHOLD && 
-                         tr.score >= CONFIDENCE_THRESHOLD && 
-                         bl.score >= CONFIDENCE_THRESHOLD && 
-                         br.score >= CONFIDENCE_THRESHOLD;
-
-    const detectedCorners = {
-      tl: tl.score >= CONFIDENCE_THRESHOLD ? { x: (tl.x / img.width) * 100, y: (tl.y / img.height) * 100 } : { x: 20, y: 20 },
-      tr: tr.score >= CONFIDENCE_THRESHOLD ? { x: (tr.x / img.width) * 100, y: (tr.y / img.height) * 100 } : { x: 80, y: 20 },
-      bl: bl.score >= CONFIDENCE_THRESHOLD ? { x: (bl.x / img.width) * 100, y: (bl.y / img.height) * 100 } : { x: 20, y: 80 },
-      br: br.score >= CONFIDENCE_THRESHOLD ? { x: (br.x / img.width) * 100, y: (br.y / img.height) * 100 } : { x: 80, y: 80 }
-    };
-
-    setCorners(detectedCorners);
-
-    if (hasAllCorners) {
-      // Auto-detected perfectly! Analyze answers straight away.
-      await processCapturedScan(imageSrc, detectedCorners);
-    } else {
-      // Show manual review/correcting screen for alignment
-      setScannerStatus('correcting');
-    }
-    setIsAnalyzing(false);
   };
 
   const processCapturedScan = async (overrideImage?: string, overrideCorners?: typeof corners) => {
     const imageToUse = overrideImage || capturedImage;
     if (!imageToUse) return;
 
-    const img = new Image();
-    img.src = imageToUse;
-    await new Promise(resolve => img.onload = resolve);
+    setIsAnalyzing(true);
 
-    // Create an off-screen temporary canvas for image processing
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = img.width;
-    tempCanvas.height = img.height;
-    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
-    if (!tempCtx) return;
+    try {
+      const img = new Image();
+      img.src = imageToUse;
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve; // guarantees we never hang on broken loading
+      });
 
-    tempCtx.drawImage(img, 0, 0);
+      if (!img.width || !img.height) {
+        throw new Error("No se pudo cargar la imagen para procesar.");
+      }
 
-    const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
-    const data = imageData.data;
+      // Create an off-screen temporary canvas for image processing
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = img.width;
+      tempCanvas.height = img.height;
+      const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+      if (!tempCtx) {
+        throw new Error("No se pudo inicializar el Canvas 2D.");
+      }
 
-    const cornersToUse = overrideCorners || corners;
+      tempCtx.drawImage(img, 0, 0);
 
-    const absoluteCorners = {
-        tl: { x: (cornersToUse.tl.x / 100) * img.width, y: (cornersToUse.tl.y / 100) * img.height },
-        tr: { x: (cornersToUse.tr.x / 100) * img.width, y: (cornersToUse.tr.y / 100) * img.height },
-        bl: { x: (cornersToUse.bl.x / 100) * img.width, y: (cornersToUse.bl.y / 100) * img.height },
-        br: { x: (cornersToUse.br.x / 100) * img.width, y: (cornersToUse.br.y / 100) * img.height }
-    };
+      const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
+      const data = imageData.data;
 
-    // Helper: Bilinear interpolation mapped relative to the detected corners setup
-    const getQuadPoint = (tx: number, ty: number) => {
-        const x = (1 - tx) * (1 - ty) * absoluteCorners.tl.x +
-                  tx * (1 - ty) * absoluteCorners.tr.x +
-                  (1 - tx) * ty * absoluteCorners.bl.x +
-                  tx * ty * absoluteCorners.br.x;
-        const y = (1 - tx) * (1 - ty) * absoluteCorners.tl.y +
-                  tx * (1 - ty) * absoluteCorners.tr.y +
-                  (1 - tx) * ty * absoluteCorners.bl.y +
-                  tx * ty * absoluteCorners.br.y;
-        return { x, y };
-    };
+      const cornersToUse = overrideCorners || corners;
 
-    const detectedAnswers: { [q: number]: string } = {};
-    const options = ['A', 'B', 'C', 'D'];
-    
-    // Draw visual corners on the output canvas for feedback
-    tempCtx.fillStyle = '#10b981';
-    Object.values(absoluteCorners).forEach(c => {
-        tempCtx.beginPath();
-        tempCtx.arc(c.x, c.y, 15, 0, Math.PI * 2);
-        tempCtx.fill();
-        tempCtx.strokeStyle = 'white';
-        tempCtx.lineWidth = 3;
-        tempCtx.stroke();
-    });
+      const absoluteCorners = {
+          tl: { x: (cornersToUse.tl.x / 100) * img.width, y: (cornersToUse.tl.y / 100) * img.height },
+          tr: { x: (cornersToUse.tr.x / 100) * img.width, y: (cornersToUse.tr.y / 100) * img.height },
+          bl: { x: (cornersToUse.bl.x / 100) * img.width, y: (cornersToUse.bl.y / 100) * img.height },
+          br: { x: (cornersToUse.br.x / 100) * img.width, y: (cornersToUse.br.y / 100) * img.height }
+      };
 
-    for (let i = 0; i < scannerConfig.questionCount; i++) {
-        const col = Math.floor(i / 20);
-        const row = i % 20;
+      // Helper: Bilinear interpolation mapped relative to the detected corners setup
+      const getQuadPoint = (tx: number, ty: number) => {
+          const x = (1 - tx) * (1 - ty) * absoluteCorners.tl.x +
+                    tx * (1 - ty) * absoluteCorners.tr.x +
+                    (1 - tx) * ty * absoluteCorners.bl.x +
+                    tx * ty * absoluteCorners.br.x;
+          const y = (1 - tx) * (1 - ty) * absoluteCorners.tl.y +
+                    tx * (1 - ty) * absoluteCorners.tr.y +
+                    (1 - tx) * ty * absoluteCorners.bl.y +
+                    tx * ty * absoluteCorners.br.y;
+          return { x, y };
+      };
 
-        const tyBubble = (19 + (row * 3.8)) / 100;
+      const detectedAnswers: { [q: number]: string } = {};
+      const options = ['A', 'B', 'C', 'D', 'E']; // Supports A B C D E
+      
+      // Draw visual corners on the output canvas for feedback
+      tempCtx.fillStyle = '#10b981';
+      Object.values(absoluteCorners).forEach(c => {
+          tempCtx.beginPath();
+          tempCtx.arc(c.x, c.y, 15, 0, Math.PI * 2);
+          tempCtx.fill();
+          tempCtx.strokeStyle = 'white';
+          tempCtx.lineWidth = 3;
+          tempCtx.stroke();
+      });
 
-        let selectedOpt = '-';
+      for (let i = 0; i < scannerConfig.questionCount; i++) {
+          const col = Math.floor(i / 20);
+          const row = i % 20;
 
-        const optionBrightness: { [opt: string]: number } = {};
-        const optionCoords: { [opt: string]: { x: number, y: number } } = {};
+          const tyBubble = (19 + (row * 3.8)) / 100;
 
-        // 1. Calculate average brightness at each candidate option bubble
-        options.forEach((opt, oIdx) => {
-            const txBubble = ((16 + (col * 22)) + 3.5 + (oIdx * 3.6)) / 100;
-            const pt = getQuadPoint(txBubble, tyBubble);
-            optionCoords[opt] = pt;
+          let selectedOpt = '-';
 
-            const sampleSize = Math.max(2, Math.floor(img.width / 160));
-            let sumBright = 0;
-            let count = 0;
-            for (let dy = -sampleSize; dy <= sampleSize; dy++) {
-                for (let dx = -sampleSize; dx <= sampleSize; dx++) {
-                    const sIdx = (Math.floor(pt.y + dy) * img.width + Math.floor(pt.x + dx)) * 4;
-                    if (sIdx >= 0 && sIdx < data.length) {
-                        const b = (data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3;
-                        sumBright += b;
-                        count++;
-                    }
-                }
-            }
-            optionBrightness[opt] = count > 0 ? (sumBright / count) : 255;
-        });
+          const optionBrightness: { [opt: string]: number } = {};
+          const optionCoords: { [opt: string]: { x: number, y: number } } = {};
 
-        // 2. Determine darkest bubble and reference brightness
-        let minBright = 255;
-        let candidateOpt = '-';
-        options.forEach(opt => {
-            if (optionBrightness[opt] < minBright) {
-                minBright = optionBrightness[opt];
-                candidateOpt = opt;
-            }
-        });
+          // 1. Calculate average brightness at each candidate option bubble
+          options.forEach((opt, oIdx) => {
+              // 3.2 spacing factor fits E beautifully
+              const txBubble = ((16 + (col * 22)) + 3.5 + (oIdx * 3.2)) / 100;
+              const pt = getQuadPoint(txBubble, tyBubble);
+              optionCoords[opt] = pt;
 
-        let otherSum = 0;
-        let otherCount = 0;
-        options.forEach(opt => {
-            if (opt !== candidateOpt) {
-                otherSum += optionBrightness[opt];
-                otherCount++;
-            }
-        });
-        const otherAvg = otherCount > 0 ? (otherSum / otherCount) : 255;
+              const sampleSize = Math.max(2, Math.floor(img.width / 160));
+              let sumBright = 0;
+              let count = 0;
+              for (let dy = -sampleSize; dy <= sampleSize; dy++) {
+                  for (let dx = -sampleSize; dx <= sampleSize; dx++) {
+                      const computedX = Math.floor(pt.x + dx);
+                      const computedY = Math.floor(pt.y + dy);
+                      const sIdx = (computedY * img.width + computedX) * 4;
+                      if (sIdx >= 0 && sIdx < data.length - 2) {
+                          const b = (data[sIdx] + data[sIdx+1] + data[sIdx+2]) / 3;
+                          sumBright += b;
+                          count++;
+                      }
+                  }
+              }
+              optionBrightness[opt] = count > 0 ? (sumBright / count) : 255;
+          });
 
-        // OMR fill check: candidate must be significantly darker than other options
-        const contrast = otherAvg - minBright;
-        const isFilled = (contrast > 20) && (minBright < 170);
+          // 2. Determine darkest bubble and reference brightness
+          let minBright = 255;
+          let candidateOpt = '-';
+          options.forEach(opt => {
+              if (optionBrightness[opt] < minBright) {
+                  minBright = optionBrightness[opt];
+                  candidateOpt = opt;
+              }
+          });
 
-        if (isFilled) {
-            selectedOpt = candidateOpt;
-        }
+          let otherSum = 0;
+          let otherCount = 0;
+          options.forEach(opt => {
+              if (opt !== candidateOpt) {
+                  otherSum += optionBrightness[opt];
+                  otherCount++;
+              }
+          });
+          const otherAvg = otherCount > 0 ? (otherSum / otherCount) : 255;
 
-        // 3. Draw diagnostic circles on feedback display canvas
-        options.forEach((opt) => {
-            const pt = optionCoords[opt];
-            const sampleSize = Math.max(2, Math.floor(img.width / 140));
-            tempCtx.beginPath();
-            tempCtx.arc(pt.x, pt.y, sampleSize, 0, Math.PI * 2);
-            
-            if (opt === selectedOpt) {
-                // Shaded / detected selection: blue outline or green if correct
-                const isCorrect = selectedOpt === scannerConfig.answerKey[i + 1];
-                tempCtx.strokeStyle = isCorrect ? '#10b981' : '#3b82f6';
-                tempCtx.lineWidth = Math.max(2, Math.floor(img.width / 400));
-                tempCtx.fillStyle = 'rgba(59, 130, 246, 0.3)';
-                tempCtx.fill();
-            } else {
-                // Empty option
-                tempCtx.strokeStyle = '#cbd5e1';
-                tempCtx.lineWidth = 1;
-            }
-            tempCtx.stroke();
-        });
+          // OMR fill check: candidate must be significantly darker than other options
+          const contrast = otherAvg - minBright;
+          const isFilled = (contrast > 20) && (minBright < 170);
 
-        if (selectedOpt !== '-') {
-            detectedAnswers[i + 1] = selectedOpt;
-        }
+          if (isFilled) {
+              selectedOpt = candidateOpt;
+          }
+
+          // 3. Draw diagnostic circles on feedback display canvas
+          options.forEach((opt) => {
+              const pt = optionCoords[opt];
+              const sampleSize = Math.max(2, Math.floor(img.width / 140));
+              tempCtx.beginPath();
+              tempCtx.arc(pt.x, pt.y, sampleSize, 0, Math.PI * 2);
+              
+              if (opt === selectedOpt) {
+                  // Shaded / detected selection: blue outline or green if correct
+                  const isCorrect = selectedOpt === scannerConfig.answerKey[i + 1];
+                  tempCtx.strokeStyle = isCorrect ? '#10b981' : '#3b82f6';
+                  tempCtx.lineWidth = Math.max(2, Math.floor(img.width / 400));
+                  tempCtx.fillStyle = 'rgba(59, 130, 246, 0.3)';
+                  tempCtx.fill();
+              } else {
+                  // Empty option
+                  tempCtx.strokeStyle = '#cbd5e1';
+                  tempCtx.lineWidth = 1;
+              }
+              tempCtx.stroke();
+          });
+
+          if (selectedOpt !== '-') {
+              detectedAnswers[i + 1] = selectedOpt;
+          }
+      }
+
+      setScanResult(detectedAnswers);
+      setScannerStatus('finished');
+
+      // Wait for the next tick so the DOM canvas element actually mounts
+      setTimeout(() => {
+          const domCanvas = canvasRef.current;
+          if (domCanvas) {
+              domCanvas.width = img.width;
+              domCanvas.height = img.height;
+              const domCtx = domCanvas.getContext('2d');
+              if (domCtx) {
+                  domCtx.drawImage(tempCanvas, 0, 0);
+              }
+          }
+      }, 100);
+    } catch (err) {
+      console.error("Error in processCapturedScan:", err);
+      alert("No se pudo procesar la hoja localmente. Alinea los marcadores por favor.");
+    } finally {
+      setIsAnalyzing(false);
     }
-
-    setScanResult(detectedAnswers);
-    setScannerStatus('finished');
-
-    // Wait for the next tick so the DOM canvas element actually mounts
-    setTimeout(() => {
-        const domCanvas = canvasRef.current;
-        if (domCanvas) {
-            domCanvas.width = img.width;
-            domCanvas.height = img.height;
-            const domCtx = domCanvas.getContext('2d');
-            if (domCtx) {
-                domCtx.drawImage(tempCanvas, 0, 0);
-            }
-        }
-    }, 100);
   };
 
   const processWithGemini = async (base64Image: string) => {
@@ -888,8 +926,27 @@ export default function App() {
       setScanResult(answers);
       setAiInfo({
         confianza: data.confianza,
-        advertencias: data.advertencias || []
+        advertencias: data.advertencias || [],
+        alumno: data.alumno,
+        fecha: data.fecha
       });
+
+      // Fuzzy student auto-match
+      if (data.alumno && typeof data.alumno === 'string') {
+        const query = data.alumno.toLowerCase().trim();
+        const matched = students.find(s => {
+          if (!s.name) return false;
+          const sName = s.name.toLowerCase().trim();
+          return sName.includes(query) || query.includes(sName);
+        });
+        if (matched) {
+          setScannerConfig(prev => ({
+            ...prev,
+            selectedStudentId: matched.id
+          }));
+        }
+      }
+
       setScannerStatus('finished');
 
       // Draw original image onto output preview canvas
@@ -1556,6 +1613,7 @@ export default function App() {
                                         <option value="B">B</option>
                                         <option value="C">C</option>
                                         <option value="D">D</option>
+                                        <option value="E">E</option>
                                     </select>
                                 </div>
                             );
@@ -1902,6 +1960,23 @@ export default function App() {
                                                 Confianza: {aiInfo.confianza}
                                             </span>
                                         </div>
+
+                                        {(aiInfo.alumno || aiInfo.fecha) && (
+                                            <div className="grid grid-cols-2 gap-3 text-xs bg-indigo-100/40 p-2.5 rounded-lg border border-indigo-100/60">
+                                                {aiInfo.alumno && (
+                                                    <div>
+                                                        <span className="text-[10px] uppercase font-black text-indigo-600 block">Estudiante Detectado</span>
+                                                        <span className="font-bold text-slate-800">{aiInfo.alumno}</span>
+                                                     </div>
+                                                 )}
+                                                 {aiInfo.fecha && (
+                                                     <div>
+                                                         <span className="text-[10px] uppercase font-black text-indigo-600 block">Fecha Detectada</span>
+                                                         <span className="font-bold text-slate-800">{aiInfo.fecha}</span>
+                                                     </div>
+                                                 )}
+                                            </div>
+                                        )}
                                         {aiInfo.advertencias.length > 0 && (
                                             <div className="text-[10px] text-indigo-700 space-y-1 bg-white/50 p-2.5 rounded-lg border border-indigo-100/50">
                                                 <span className="font-bold block">Observaciones del Escaneo:</span>

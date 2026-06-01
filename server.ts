@@ -26,13 +26,40 @@ async function startServer() {
   app.post("/api/omr-ai", async (req, res) => {
     try {
       const { image, questionCount } = req.body;
+      const count = Number(questionCount) || 30;
       if (!image) {
         return res.status(400).json({ error: "No se proporcionó ninguna imagen." });
       }
 
-      if (!apiKey) {
-        return res.status(500).json({ 
-          error: "GEMINI_API_KEY no está configurada. Por favor configúrala en Settings > Secrets en la UI de AI Studio." 
+      // Check if API key is missing or placeholder
+      if (!apiKey || apiKey === "MOCK_KEY" || apiKey.trim() === "" || apiKey === "MY_GEMINI_API_KEY") {
+        console.warn("GEMINI_API_KEY not configured. Falling back to simulated OMR analysis.");
+        
+        // Generate realistic simulated responses
+        const respuestas: { [key: string]: string } = {};
+        const options = ["A", "B", "C", "D", "E"];
+        for (let i = 1; i <= count; i++) {
+          const rand = (i * 7 + 13) % 100;
+          if (rand < 4) {
+            respuestas[String(i)] = "OMITIDA";
+          } else if (rand < 6) {
+            respuestas[String(i)] = "INVÁLIDA";
+          } else {
+            respuestas[String(i)] = options[rand % options.length];
+          }
+        }
+
+        return res.json({
+          alumno: "ALDO OLIVARES (Simulado)",
+          fecha: "01/06/2026",
+          total_preguntas: count,
+          respuestas,
+          confianza: "alta",
+          advertencias: [
+            "[MODO DEMO] GEMINI_API_KEY no está configurada.",
+            "Para probar la corrección asistida por IA Gemini con hojas reales, configúrala en 'Settings > Secrets' en la barra superior.",
+            "Este escaneo ha sido simulado con alta fidelidad para permitirte explorar el flujo de corrección, carga de notas e informes."
+          ]
         });
       }
 
@@ -46,37 +73,36 @@ async function startServer() {
         },
       };
 
-      const systemInstruction = `Eres un experto de clase mundial en lectura de hojas de respuesta OMR (optical mark recognition).
-Analizas la imagen de la hoja de respuestas y extraes las alternativas marcadas por el estudiante.
-
-## CONTEXTO
-La imagen puede estar tomada en ángulo, con sombras, arrugas o distorsión de perspectiva.
-DEBES igualmente leer las marcas aunque la hoja no esté perfectamente plana o recta.
+      const systemInstruction = `Eres un sistema OMR (Optical Mark Recognition) experto de clase mundial, similar a ZipGrade, integrado con Inteligencia Artificial avanzada.
 
 ## FORMATO DE LA HOJA
-- La hoja contiene preguntas numeradas del 1 al ${questionCount}.
-- Cada pregunta tiene círculos de alternativa: A, B, C, D (u opciones similares).
-- El círculo MARCADO se ve significativamente más oscuro, totalmente pintado/relleno, o con una marca/trazado fuerte adentro.
-- Los no marcados están vacíos o solo tienen un borde claro.
+- 4 marcadores cuadrados negros en las 4 esquinas de la hoja.
+- 30 preguntas organizadas en 2 columnas:
+  • Columna izquierda: preguntas del 1 al 20.
+  • Columna derecha: preguntas del 21 al 30.
+- Cada pregunta tiene 5 círculos con letras: A B C D E (u opciones similares).
+- Los círculos marcados están RELLENOS o con una marca/trazado interior visible.
+- Los no marcados están VACÍOS o solo tienen bordes claros de círculo.
 
-## INSTRUCCIONES CRÍTICAS DE DETECCIÓN
-1. Primero localiza los 4 marcadores de esquina negros para orientar la hoja.
-2. Corrige mentalmente cualquier perspectiva, rotación o inclinación de la imagen.
-3. Recorre FILA POR FILA las ${questionCount} preguntas de arriba hacia abajo.
-4. Para cada pregunta, identifica cuál círculo está marcado (más oscuro/relleno).
-5. Si una pregunta tiene más de un círculo marcado, indícalo como "INVÁLIDA".
-6. Si ningún círculo está marcado (todos están vacíos o idénticos), indícalo como "OMITIDA". Nunca pongas OMITIDA por defecto — esfuérzate en distinguir diferencias de tono sutiles en la marca del estudiante.
+## PASO 1 - ORIENTACIÓN
+Localiza los 4 cuadros negros de las esquinas. Úsalos para corregir mentalmente la perspectiva, sombras, inclinación y rotación de la imagen.
 
-## INSTRUCCIONES DE FORMATO
-Debes responder estrictamente con un JSON estructurado según la especificación provista, sin markdown, sin texto extra.`;
+## PASO 2 - LECTURA
+Recorre cada fila de pregunta comparando sus 5 círculos entre sí para la columna izquierda (1 al 20) y la columna derecha (21 al 30).
+La fila/círculo que se vea más oscuro, relleno o con trazo fuerte comparado con los otros círculos es la respuesta del estudiante.
+- Solo marca OMITIDA si los círculos son visualmente idénticos (todos vacíos). No pongas OMITIDA por defecto — esfuérzate en distinguir diferencias sutiles de tono o marcas hechas a lápiz.
+- Solo marca INVÁLIDA si hay 2 o más círculos marcados en la misma pregunta.
 
-      console.log(`Analyzing OMR sheet with Gemini-3.5-Flash for ${questionCount} questions...`);
+## PASO 3 - RESPUESTA
+Debes responder estrictamente con un JSON estructurado de la siguiente forma, sin bloques de código markdown ni explicaciones de texto adicionales.`;
+
+      console.log(`Analyzing OMR sheet with Gemini-3.5-Flash for ${count} questions...`);
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
         contents: [
           imagePart,
-          { text: `Por favor analiza esta imagen de hoja de respuestas y extrae las alternativas marcadas por el estudiante para las preguntas de la 1 a la ${questionCount}. Retorna un JSON válido.` }
+          { text: `Por favor analiza esta imagen de hoja de respuestas y extrae las alternativas marcadas por el estudiante para las preguntas de la 1 a la ${count}. Retorna un JSON válido.` }
         ],
         config: {
           systemInstruction,
@@ -84,13 +110,21 @@ Debes responder estrictamente con un JSON estructurado según la especificación
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              alumno: {
+                type: Type.STRING,
+                description: "Nombre del alumno/estudiante si es legible, de lo contrario null"
+              },
+              fecha: {
+                type: Type.STRING,
+                description: "Fecha de la prueba u hoja si es legible, de lo contrario null"
+              },
               total_preguntas: {
                 type: Type.INTEGER,
                 description: "El total de preguntas analizadas"
               },
               respuestas: {
                 type: Type.OBJECT,
-                description: "Mapeo de número de pregunta (ej. '1', '2', '3') a su respuesta detectada ('A', 'B', 'C', 'D', 'OMITIDA', 'INVÁLIDA')"
+                description: "Mapeo de número de pregunta (ej. '1', '2', '3') a su respuesta detectada ('A', 'B', 'C', 'D', 'E', 'OMITIDA', 'INVÁLIDA')"
               },
               confianza: {
                 type: Type.STRING,
@@ -101,10 +135,10 @@ Debes responder estrictamente con un JSON estructurado según la especificación
                 items: {
                   type: Type.STRING
                 },
-                description: "Cualquier advertencia de iluminación, rotación o problemas de legibilidad"
+                description: "detalla aquí cualquier pregunta dudosa, problemas de rotación o de legibilidad"
               }
             },
-            required: ["total_preguntas", "respuestas", "confianza", "advertencias"]
+            required: ["alumno", "fecha", "total_preguntas", "respuestas", "confianza", "advertencias"]
           }
         }
       });
